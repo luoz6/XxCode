@@ -1,0 +1,19 @@
+[project]
+name = "xxcode"
+version = "0.1.0"
+description = "XxCode — a production-grade AI coding agent in Python"
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=0.34.0",
+    "httpx>=0.27.0",
+    "rich>=13.0.0",
+    "prompt-toolkit>=3.0.0",
+    "pydantic>=2.0.0",
+]
+
+[project.scripts]
+xxcode = "src.main:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
