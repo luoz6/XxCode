@@ -317,7 +317,7 @@ Expected: PASS
 
 ```bash
 git add tests/context/test_compression_contributions.py src/xxcode/context/micro.py src/xxcode/context/pipeline.py
-git commit -m "Add exact L2 compression contribution metrics"
+git commit -m "Add exact L2 compression contribution metrics; micro_truncated now counts cleared blocks"
 ```
 
 ## Task 3: Add Exact L3 Net Reduction Accounting
@@ -356,6 +356,10 @@ async def test_l3_reports_net_message_reduction_and_token_delta(tmp_path, monkey
     )
 
     assert stats.collapse_tokens_freed > 0
+    # 16 messages total, and with the current role-alternation partitioning
+    # each message forms its own exchange. keep_recent=5 preserves the newest
+    # 5 messages; the older 11 messages collapse to 1 summary.
+    # Net reduction = 16 - (1 + 5) = 10.
     assert stats.collapse_count == 10
     collapsed_texts = [
         block["text"]
@@ -482,6 +486,7 @@ Replace the L4 section in `src/xxcode/context/pipeline.py` with:
 
 ```python
         post_l3_tokens = stats.tokens_after
+        snip_tokens_freed = stats.snip_removed // 4
         if not should_autocompact(
             current_tokens=stats.tokens_after,
             snip_tokens_freed=snip_tokens_freed,
@@ -748,9 +753,12 @@ py -3.11 -m pytest tests/context/test_compression_contributions.py::test_end_to_
 
 Expected: FAIL if any stage still reuses stale `stats.tokens_after` values or leaves an uninitialized contribution field.
 
-- [ ] **Step 3: Refactor `compress()` to use explicit stage token variables**
+- [ ] **Step 3: Verify the explicit stage token variables already support telescoping equality**
 
-Normalize the stage accounting in `src/xxcode/context/pipeline.py` so each stage delta is computed from explicit neighboring estimates:
+If Tasks 1 through 5 were applied exactly as written, `compress()` should
+already use explicit neighboring estimates. Verify that
+`src/xxcode/context/pipeline.py` still contains these stage-boundary
+relationships:
 
 ```python
         post_l1_tokens = token_count_with_estimation(current)
@@ -770,8 +778,9 @@ Normalize the stage accounting in `src/xxcode/context/pipeline.py` so each stage
         stats.tokens_after = final_tokens
 ```
 
-Do not collapse these variables back into anonymous inline expressions; the
-exact-sum regression depends on the stage boundaries being obvious and stable.
+Do not collapse these variables back into anonymous inline expressions. If an
+earlier task drifted from this layout, make the smallest code edit needed to
+restore these explicit stage boundaries before rerunning the regression.
 
 - [ ] **Step 4: Run the end-to-end regression to verify it passes**
 
@@ -816,6 +825,7 @@ py -3.11 -m pytest tests/context tests/agent/test_query_engine_stages.py tests/t
 ```
 
 Expected: PASS
+Confirmed at plan-writing time: `tests/test_permission_flow.py` exists in the repository.
 
 - [ ] **Step 3: Compile the source tree**
 
