@@ -254,6 +254,44 @@ def generated_index_cases() -> list[GeneratedIndexEvalCase]:
     ]
 
 
+def raw_index_risk_cases() -> list[RawIndexEvalCase]:
+    return [
+        RawIndexEvalCase(
+            case_id="raw-stale-reference",
+            index_content=(
+                "- [Existing](existing.md) - Existing memory\n"
+                "- [Ghost](ghost.md) - Missing memory file\n"
+            ),
+            memory_files={
+                "existing.md": _memory_file("user", "Existing", "Existing memory"),
+            },
+            expected_present_filenames={"existing.md"},
+            risk_labels={"stale"},
+        ),
+        RawIndexEvalCase(
+            case_id="raw-duplicate-reference",
+            index_content=(
+                "- [Existing](existing.md) - Existing memory\n"
+                "- [Existing Again](existing.md) - Existing memory duplicate\n"
+            ),
+            memory_files={
+                "existing.md": _memory_file("user", "Existing", "Existing memory"),
+            },
+            expected_present_filenames={"existing.md"},
+            risk_labels={"duplicate"},
+        ),
+        RawIndexEvalCase(
+            case_id="raw-generic-description",
+            index_content="- [Todo](todo.md) - todo\n",
+            memory_files={
+                "todo.md": _memory_file("reference", "Todo", "todo"),
+            },
+            expected_present_filenames={"todo.md"},
+            risk_labels={"generic-description"},
+        ),
+    ]
+
+
 def build_index_scorecard(
     metrics: list[IndexOrganizationMetrics],
 ) -> IndexOrganizationScorecard:

@@ -5,6 +5,7 @@ from tests.memory.helpers.index_eval import (
     compute_index_metrics,
     compute_generated_index_metrics,
     generated_index_cases,
+    raw_index_risk_cases,
     scan_raw_index_links,
 )
 
@@ -113,6 +114,57 @@ def test_generated_index_scorecard_reports_case_count(tmp_path):
     assert scorecard.mean_coverage_rate == 1.0
     assert scorecard.mean_stale_reference_rate == 0.0
     assert scorecard.type_order_adherence_rate == 1.0
+
+
+def test_description_metrics_detect_generic_and_non_discriminative_entries():
+    case = RawIndexEvalCase(
+        case_id="description-risk",
+        index_content=(
+            "- [Todo](todo.md) - todo\n"
+            "- [Project Plan](project-plan.md) - project plan\n"
+            "- [Pandas Style](pandas-style.md) - User prefers pandas dataframes\n"
+        ),
+        memory_files={
+            "todo.md": _memory_file("reference", "Todo", "todo"),
+            "project-plan.md": _memory_file("project", "Project Plan", "project plan"),
+            "pandas-style.md": _memory_file(
+                "user",
+                "Pandas Style",
+                "User prefers pandas dataframes",
+            ),
+        },
+        expected_present_filenames={
+            "todo.md",
+            "project-plan.md",
+            "pandas-style.md",
+        },
+        risk_labels={"generic-description", "non-discriminative"},
+    )
+
+    metrics = compute_index_metrics(
+        case.index_content,
+        case.memory_files,
+        case_id=case.case_id,
+    )
+
+    assert metrics.description_present_rate == 1.0
+    assert metrics.generic_description_rate == 1 / 3
+    assert metrics.discriminative_token_rate == 1 / 3
+
+
+def test_raw_risk_cases_detect_their_expected_risks():
+    metrics_by_case = {
+        case.case_id: compute_index_metrics(
+            case.index_content,
+            case.memory_files,
+            case_id=case.case_id,
+        )
+        for case in raw_index_risk_cases()
+    }
+
+    assert metrics_by_case["raw-stale-reference"].stale_reference_rate > 0.0
+    assert metrics_by_case["raw-duplicate-reference"].duplicate_reference_rate > 0.0
+    assert metrics_by_case["raw-generic-description"].generic_description_rate > 0.0
 
 
 def _memory_file(memory_type: str, name: str, description: str) -> str:
