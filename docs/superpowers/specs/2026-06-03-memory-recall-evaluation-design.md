@@ -177,6 +177,11 @@ The curated benchmark dataset should live under:
 
 - `tests/memory/fixtures/recall_eval/`
 
+Phase one may keep the small curated corpus as inline Python structures in the
+test helper module to minimize file I/O and schema overhead. If the corpus grows
+or needs versioned review, migrate those inline cases to files under
+`tests/memory/fixtures/recall_eval/` without changing the case contract.
+
 ### 8.2 Case Shape
 
 Each case should define:
@@ -271,6 +276,10 @@ Definitions:
 If no files are selected and the case defines `expected_top1`, `top1_hit` is
 defined as `0.0`.
 
+If a case does not define `expected_top1`, `top1_hit` is undefined for that case
+and must be excluded from the `top1_hit_rate` denominator. Such a case should
+not count as either a top1 success or a top1 failure.
+
 `k` is fixed to `MAX_RECALLED_MEMORIES` in version 0.1.
 
 ### 9.2 Stability Metrics
@@ -303,6 +312,7 @@ Version 0.1 should expose a scorecard, not a single blended `quality_score` or
 Recommended quality scorecard fields:
 
 - `n_cases`
+- `n_top1_cases`
 - `mean_precision_at_k`
 - `mean_recall_at_k`
 - `mean_f1_at_k`

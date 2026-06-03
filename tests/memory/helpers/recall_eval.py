@@ -167,13 +167,14 @@ class QualityMetrics:
     precision_at_k: float
     recall_at_k: float
     f1_at_k: float
-    top1_hit: float
+    top1_hit: float | None
     topk_full_match: float
 
 
 @dataclass(frozen=True)
 class QualityScorecard:
     n_cases: int
+    n_top1_cases: int
     mean_precision_at_k: float
     mean_recall_at_k: float
     mean_f1_at_k: float
@@ -210,9 +211,8 @@ def compute_quality_metrics(
     else:
         f1 = 2 * precision * recall / (precision + recall)
 
-    if case.expected_top1 is None:
-        top1_hit = 1.0
-    else:
+    top1_hit = None
+    if case.expected_top1 is not None:
         top1_hit = (
             1.0
             if selected_filenames and selected_filenames[0] == case.expected_top1
@@ -235,6 +235,7 @@ def build_quality_scorecard(metrics: list[QualityMetrics]) -> QualityScorecard:
     if not metrics:
         return QualityScorecard(
             n_cases=0,
+            n_top1_cases=0,
             mean_precision_at_k=0.0,
             mean_recall_at_k=0.0,
             mean_f1_at_k=0.0,
@@ -243,12 +244,17 @@ def build_quality_scorecard(metrics: list[QualityMetrics]) -> QualityScorecard:
         )
 
     n_cases = len(metrics)
+    top1_metrics = [m.top1_hit for m in metrics if m.top1_hit is not None]
+    n_top1_cases = len(top1_metrics)
     return QualityScorecard(
         n_cases=n_cases,
+        n_top1_cases=n_top1_cases,
         mean_precision_at_k=sum(m.precision_at_k for m in metrics) / n_cases,
         mean_recall_at_k=sum(m.recall_at_k for m in metrics) / n_cases,
         mean_f1_at_k=sum(m.f1_at_k for m in metrics) / n_cases,
-        top1_hit_rate=sum(m.top1_hit for m in metrics) / n_cases,
+        top1_hit_rate=(
+            sum(top1_metrics) / n_top1_cases if n_top1_cases else 0.0
+        ),
         full_match_rate=sum(m.topk_full_match for m in metrics) / n_cases,
     )
 
@@ -514,6 +520,7 @@ def format_quality_scorecard(scorecard: QualityScorecard) -> str:
     return (
         "quality "
         f"n_cases={scorecard.n_cases} "
+        f"n_top1_cases={scorecard.n_top1_cases} "
         f"mean_precision_at_k={scorecard.mean_precision_at_k:.3f} "
         f"mean_recall_at_k={scorecard.mean_recall_at_k:.3f} "
         f"mean_f1_at_k={scorecard.mean_f1_at_k:.3f} "

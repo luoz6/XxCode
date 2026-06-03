@@ -116,6 +116,44 @@ def test_quality_metrics_compute_precision_recall_f1_and_top1():
     )
 
 
+def test_quality_scorecard_excludes_cases_without_top1_expectation():
+    no_top1_case = RecallEvalCase(
+        case_id="no-top1",
+        query="pandas dataframe analysis",
+        index_content="- [Pandas Style](pandas-style.md) - User prefers pandas\n",
+        memory_files={
+            "pandas-style.md": "---\nmetadata:\n  type: user\n---\n\nPandas",
+        },
+        expected_filenames={"pandas-style.md"},
+    )
+    with_top1_case = RecallEvalCase(
+        case_id="with-top1",
+        query="release planning",
+        index_content="- [Release Plan](release-plan.md) - Release planning\n",
+        memory_files={
+            "release-plan.md": "---\nmetadata:\n  type: project\n---\n\nRelease",
+        },
+        expected_filenames={"release-plan.md"},
+        expected_top1="release-plan.md",
+    )
+
+    no_top1_metrics = compute_quality_metrics(
+        no_top1_case,
+        selected_filenames=["pandas-style.md"],
+    )
+    with_top1_metrics = compute_quality_metrics(
+        with_top1_case,
+        selected_filenames=["not-release-plan.md"],
+    )
+
+    scorecard = build_quality_scorecard([no_top1_metrics, with_top1_metrics])
+
+    assert no_top1_metrics.top1_hit is None
+    assert scorecard.n_cases == 2
+    assert scorecard.n_top1_cases == 1
+    assert scorecard.top1_hit_rate == 0.0
+
+
 def test_quality_scorecard_summary_includes_case_count_and_key_metrics():
     scorecard = build_quality_scorecard([
         QualityMetrics(
@@ -133,6 +171,7 @@ def test_quality_scorecard_summary_includes_case_count_and_key_metrics():
     summary = format_quality_scorecard(scorecard)
 
     assert "n_cases=1" in summary
+    assert "n_top1_cases=1" in summary
     assert "mean_f1_at_k=1.000" in summary
     assert "full_match_rate=1.000" in summary
 
