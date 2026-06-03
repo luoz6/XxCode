@@ -2,8 +2,10 @@ import pytest
 
 import xxcode.context.pipeline as pipeline_module
 
+from xxcode.agent.state import AgentState
 from xxcode.config import Config
 from xxcode.context.pipeline import ContextPipeline
+from xxcode.context.tokens import token_count_with_estimation
 
 
 def _make_pipeline(tmp_path):
@@ -172,3 +174,42 @@ async def test_l3_reports_net_message_reduction_and_token_delta(tmp_path, monkey
         if block.get("type") == "text"
     ]
     assert any(text.startswith("[Earlier conversation") for text in collapsed_texts)
+
+
+@pytest.mark.asyncio
+async def test_l4_success_reports_budget_and_token_delta(tmp_path, monkeypatch):
+    pipeline = _make_pipeline(tmp_path)
+    messages: list[dict] = []
+    for turn_id in range(12):
+        messages.extend(_exchange(turn_id, text_size=1200))
+
+    seen: dict[str, int] = {}
+
+    async def _fake_autocompact(self, current, system_prompt):
+        seen["post_l3_tokens"] = token_count_with_estimation(current)
+        return "condensed summary"
+
+    monkeypatch.setattr(ContextPipeline, "_autocompact", _fake_autocompact)
+
+    state = AgentState(system_prompt="system")
+    state.task_budget_remaining = 50_000
+
+    compressed, stats = await pipeline.compress(
+        messages,
+        current_tokens=None,
+        context_limit=1000,
+        threshold=0.1,
+        state=state,
+    )
+
+    summary_texts = [
+        block["text"]
+        for msg in compressed
+        for block in msg.get("content", [])
+        if block.get("type") == "text"
+    ]
+
+    assert stats.auto_triggered is True
+    assert stats.auto_tokens_freed > 0
+    assert any("[Conversation summary]" in text for text in summary_texts)
+    assert state.task_budget_remaining == 50_000 - seen["post_l3_tokens"]

@@ -151,18 +151,19 @@ class ContextPipeline:
             if state is not None and hasattr(state, "consecutive_autocompact_failures")
             else self._consecutive_autocompact_failures
         )
-        snip_tokens_freed = stats.snip_removed // 4
+        l1_char_tokens_freed = stats.snip_removed // 4
         if not should_autocompact(
             current_tokens=stats.tokens_after,
-            snip_tokens_freed=snip_tokens_freed,
+            snip_tokens_freed=l1_char_tokens_freed,
             context_limit=context_limit,
             consecutive_failures=failure_count,
         ):
             logger.debug(
                 "L4 suppressed: tokens_after=%d, snip_freed=%d, "
                 "consecutive_failures=%d",
-                stats.tokens_after, snip_tokens_freed, failure_count,
+                stats.tokens_after, l1_char_tokens_freed, failure_count,
             )
+            stats.auto_tokens_freed = 0
             stats.tokens_after = token_count_with_estimation(current)
             return current, stats
 
@@ -198,7 +199,9 @@ class ContextPipeline:
             else:
                 self._consecutive_autocompact_failures += 1
 
-        stats.tokens_after = token_count_with_estimation(current)
+        final_tokens = token_count_with_estimation(current)
+        stats.auto_tokens_freed = post_l3_tokens - final_tokens
+        stats.tokens_after = final_tokens
         return current, stats
 
     def estimate_tokens(self, messages: list[dict], system_prompt: str = "") -> int:
