@@ -2,9 +2,12 @@ import pytest
 
 from tests.memory.helpers.extraction_eval import (
     ExtractionEvalCase,
+    build_extraction_scorecard,
     classify_operations,
     compute_extraction_metrics,
+    extraction_quality_cases,
     flatten_conversation_text,
+    format_extraction_scorecard,
     memory_file,
 )
 
@@ -400,3 +403,66 @@ def test_expected_deleted_filename_must_be_classified_as_deleted():
 
     with pytest.raises(ValueError, match="expected deleted files were not deleted"):
         compute_extraction_metrics(case)
+
+
+def test_extraction_quality_cases_have_expected_positive_metrics():
+    metrics_by_case = {
+        case.case_id: compute_extraction_metrics(case)
+        for case in extraction_quality_cases()
+    }
+
+    healthy = metrics_by_case["captures-user-style"]
+    assert healthy.write_validity_rate == 1.0
+    assert healthy.field_completeness_rate == 1.0
+    assert healthy.expected_memory_coverage == 1.0
+    assert healthy.expected_fact_coverage == 1.0
+    assert healthy.grounding_rate == 1.0
+
+    noisy = metrics_by_case["rejects-temporary-debug-noise"]
+    assert noisy.noise_suppression_rate == 1.0
+    assert noisy.forbidden_fact_leak_count == 0
+
+
+def test_extraction_quality_risk_cases_expose_expected_weaknesses():
+    metrics_by_case = {
+        case.case_id: compute_extraction_metrics(case)
+        for case in extraction_quality_cases()
+    }
+
+    assert metrics_by_case["wrong-type-risk"].memory_type_accuracy < 1.0
+    assert metrics_by_case["missing-fact-risk"].expected_fact_coverage < 1.0
+    assert metrics_by_case["ungrounded-risk"].grounding_rate < 1.0
+    assert metrics_by_case["duplicate-risk"].duplicate_control_rate == 0.0
+    assert metrics_by_case["conflict-risk"].conflict_update_correctness == 0.0
+
+
+def test_extraction_scorecard_excludes_none_metrics_from_optional_means():
+    cases = extraction_quality_cases()
+    metrics = [compute_extraction_metrics(case) for case in cases]
+
+    scorecard = build_extraction_scorecard(metrics)
+
+    assert scorecard.n_cases == len(cases)
+    assert scorecard.n_type_cases > 0
+    assert scorecard.n_noise_cases > 0
+    assert scorecard.n_duplicate_cases > 0
+    assert scorecard.n_conflict_cases > 0
+    assert 0.0 <= scorecard.mean_memory_type_accuracy <= 1.0
+    assert 0.0 <= scorecard.mean_noise_suppression_rate <= 1.0
+    assert 0.0 <= scorecard.mean_duplicate_control_rate <= 1.0
+    assert 0.0 <= scorecard.mean_conflict_update_correctness <= 1.0
+
+
+def test_extraction_scorecard_summary_includes_key_metrics():
+    metrics = [
+        compute_extraction_metrics(case)
+        for case in extraction_quality_cases()
+    ]
+    scorecard = build_extraction_scorecard(metrics)
+
+    summary = format_extraction_scorecard(scorecard)
+
+    assert "n_cases=" in summary
+    assert "mean_write_validity_rate=" in summary
+    assert "n_noise_cases=" in summary
+    assert "mean_noise_suppression_rate=" in summary

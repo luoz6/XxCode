@@ -66,6 +66,25 @@ class ExtractionMetrics:
     operations: OperationClassification
 
 
+@dataclass(frozen=True)
+class ExtractionScorecard:
+    n_cases: int = 0
+    mean_write_validity_rate: float = 0.0
+    mean_field_completeness_rate: float = 0.0
+    mean_expected_memory_coverage: float = 0.0
+    mean_expected_fact_coverage: float = 0.0
+    mean_grounding_rate: float = 0.0
+    n_noise_cases: int = 0
+    mean_noise_suppression_rate: float = 0.0
+    total_forbidden_fact_leak_count: int = 0
+    n_type_cases: int = 0
+    mean_memory_type_accuracy: float = 0.0
+    n_duplicate_cases: int = 0
+    mean_duplicate_control_rate: float = 0.0
+    n_conflict_cases: int = 0
+    mean_conflict_update_correctness: float = 0.0
+
+
 def flatten_conversation_text(conversation: list[dict[str, Any]]) -> str:
     parts: list[str] = []
     for message in conversation:
@@ -211,6 +230,232 @@ def memory_file(
             content=content,
             metadata={"type": memory_type},
         )
+    )
+
+
+def extraction_quality_cases() -> list[ExtractionEvalCase]:
+    existing_duplicate = memory_file(
+        "user",
+        "Existing Style",
+        "User prefers snake_case",
+        "User prefers snake_case in Python tests.",
+    )
+    return [
+        ExtractionEvalCase(
+            case_id="captures-user-style",
+            conversation=[
+                {"role": "user", "content": "I prefer snake_case in Python tests."},
+            ],
+            existing_memory_files={},
+            candidate_memory_files={
+                "python-style.md": memory_file(
+                    "user",
+                    "Python Style",
+                    "User prefers snake_case in Python tests",
+                    "Use snake_case when writing Python tests for the user.",
+                ),
+            },
+            expected_memory_filenames={"python-style.md"},
+            expected_facts={"user prefers snake_case python tests"},
+            expected_types={"python-style.md": "user"},
+            source_evidence={
+                "user prefers snake_case python tests": {
+                    "prefer snake_case python tests",
+                },
+            },
+        ),
+        ExtractionEvalCase(
+            case_id="rejects-temporary-debug-noise",
+            conversation=[
+                {"role": "user", "content": "Temporarily debug port 5432 today."},
+            ],
+            existing_memory_files={},
+            candidate_memory_files={},
+            expected_memory_filenames=set(),
+            expected_facts=set(),
+            expected_types={},
+            forbidden_facts={"temporary debug port 5432"},
+        ),
+        ExtractionEvalCase(
+            case_id="wrong-type-risk",
+            conversation=[
+                {"role": "user", "content": "Always run tests before completion."},
+            ],
+            existing_memory_files={},
+            candidate_memory_files={
+                "testing-rule.md": memory_file(
+                    "reference",
+                    "Testing Rule",
+                    "Always run tests",
+                    "Always run tests before completion.",
+                ),
+            },
+            expected_memory_filenames={"testing-rule.md"},
+            expected_facts={"always run tests"},
+            expected_types={"testing-rule.md": "feedback"},
+        ),
+        ExtractionEvalCase(
+            case_id="missing-fact-risk",
+            conversation=[
+                {"role": "user", "content": "Use pandas and prefer pytest fixtures."},
+            ],
+            existing_memory_files={},
+            candidate_memory_files={
+                "analysis-style.md": memory_file(
+                    "user",
+                    "Analysis Style",
+                    "Use pandas",
+                    "Use pandas for analysis.",
+                ),
+            },
+            expected_memory_filenames={"analysis-style.md"},
+            expected_facts={"use pandas", "prefer pytest fixtures"},
+            expected_types={"analysis-style.md": "user"},
+        ),
+        ExtractionEvalCase(
+            case_id="ungrounded-risk",
+            conversation=[
+                {"role": "user", "content": "Use pandas dataframes for analysis."},
+            ],
+            existing_memory_files={},
+            candidate_memory_files={
+                "hallucinated-style.md": memory_file(
+                    "user",
+                    "Hallucinated Style",
+                    "Use spark clusters",
+                    "Use spark clusters for analysis.",
+                ),
+            },
+            expected_memory_filenames={"hallucinated-style.md"},
+            expected_facts={"use spark clusters"},
+            expected_types={"hallucinated-style.md": "user"},
+            candidate_claims={"use spark clusters"},
+        ),
+        ExtractionEvalCase(
+            case_id="duplicate-risk",
+            conversation=[
+                {"role": "user", "content": "I prefer snake_case in Python tests."},
+            ],
+            existing_memory_files={"existing-style.md": existing_duplicate},
+            candidate_memory_files={
+                "existing-style.md": existing_duplicate,
+                "duplicate-style.md": memory_file(
+                    "user",
+                    "Duplicate Style",
+                    "User prefers snake_case",
+                    "User prefers snake_case in Python tests.",
+                ),
+            },
+            expected_memory_filenames={"existing-style.md"},
+            expected_facts={"user prefers snake_case"},
+            expected_types={"existing-style.md": "user"},
+            duplicate_facts={"user prefers snake_case"},
+        ),
+        ExtractionEvalCase(
+            case_id="conflict-risk",
+            conversation=[
+                {"role": "user", "content": "Actually use pathlib instead of os.path."},
+            ],
+            existing_memory_files={
+                "path-style.md": memory_file(
+                    "feedback",
+                    "Path Style",
+                    "Prefer os.path",
+                    "Prefer os.path for path manipulation.",
+                ),
+            },
+            candidate_memory_files={
+                "path-style.md": memory_file(
+                    "feedback",
+                    "Path Style",
+                    "Prefer pathlib but keep os.path",
+                    "Prefer pathlib now. Previously prefer os.path.",
+                ),
+            },
+            expected_memory_filenames={"path-style.md"},
+            expected_facts={"prefer pathlib"},
+            expected_types={"path-style.md": "feedback"},
+            expected_latest_facts={"prefer pathlib"},
+            obsolete_facts={"prefer os path"},
+            expected_updated_filenames={"path-style.md"},
+        ),
+    ]
+
+
+def build_extraction_scorecard(
+    metrics: list[ExtractionMetrics],
+) -> ExtractionScorecard:
+    if not metrics:
+        return ExtractionScorecard()
+    n_cases = len(metrics)
+    type_values = [
+        metric.memory_type_accuracy
+        for metric in metrics
+        if metric.memory_type_accuracy is not None
+    ]
+    noise_values = [
+        metric.noise_suppression_rate
+        for metric in metrics
+        if metric.noise_suppression_rate is not None
+    ]
+    duplicate_values = [
+        metric.duplicate_control_rate
+        for metric in metrics
+        if metric.duplicate_control_rate is not None
+    ]
+    conflict_values = [
+        metric.conflict_update_correctness
+        for metric in metrics
+        if metric.conflict_update_correctness is not None
+    ]
+    return ExtractionScorecard(
+        n_cases=n_cases,
+        mean_write_validity_rate=(
+            sum(metric.write_validity_rate for metric in metrics) / n_cases
+        ),
+        mean_field_completeness_rate=(
+            sum(metric.field_completeness_rate for metric in metrics) / n_cases
+        ),
+        mean_expected_memory_coverage=(
+            sum(metric.expected_memory_coverage for metric in metrics) / n_cases
+        ),
+        mean_expected_fact_coverage=(
+            sum(metric.expected_fact_coverage for metric in metrics) / n_cases
+        ),
+        mean_grounding_rate=sum(metric.grounding_rate for metric in metrics)
+        / n_cases,
+        n_noise_cases=len(noise_values),
+        mean_noise_suppression_rate=_mean_optional(noise_values),
+        total_forbidden_fact_leak_count=sum(
+            metric.forbidden_fact_leak_count for metric in metrics
+        ),
+        n_type_cases=len(type_values),
+        mean_memory_type_accuracy=_mean_optional(type_values),
+        n_duplicate_cases=len(duplicate_values),
+        mean_duplicate_control_rate=_mean_optional(duplicate_values),
+        n_conflict_cases=len(conflict_values),
+        mean_conflict_update_correctness=_mean_optional(conflict_values),
+    )
+
+
+def format_extraction_scorecard(scorecard: ExtractionScorecard) -> str:
+    return (
+        "extraction "
+        f"n_cases={scorecard.n_cases} "
+        f"mean_write_validity_rate={scorecard.mean_write_validity_rate:.3f} "
+        f"mean_field_completeness_rate={scorecard.mean_field_completeness_rate:.3f} "
+        f"mean_expected_memory_coverage={scorecard.mean_expected_memory_coverage:.3f} "
+        f"mean_expected_fact_coverage={scorecard.mean_expected_fact_coverage:.3f} "
+        f"mean_grounding_rate={scorecard.mean_grounding_rate:.3f} "
+        f"n_noise_cases={scorecard.n_noise_cases} "
+        f"mean_noise_suppression_rate={scorecard.mean_noise_suppression_rate:.3f} "
+        f"n_type_cases={scorecard.n_type_cases} "
+        f"mean_memory_type_accuracy={scorecard.mean_memory_type_accuracy:.3f} "
+        f"n_duplicate_cases={scorecard.n_duplicate_cases} "
+        f"mean_duplicate_control_rate={scorecard.mean_duplicate_control_rate:.3f} "
+        f"n_conflict_cases={scorecard.n_conflict_cases} "
+        f"mean_conflict_update_correctness="
+        f"{scorecard.mean_conflict_update_correctness:.3f}"
     )
 
 
@@ -386,6 +631,12 @@ def _conflict_update_correctness(
     )
     obsolete_present = bool(_represented_facts(case.obsolete_facts, candidate_texts))
     return 1.0 if latest_present and not obsolete_present else 0.0
+
+
+def _mean_optional(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    return sum(values) / len(values)
 
 
 def _safe_div(numerator: int, denominator: int, empty_value: float) -> float:
