@@ -178,7 +178,10 @@ Each case should define:
 
 Field meanings:
 
-- `conversation`: source messages that extraction is allowed to use
+- `conversation`: source messages that extraction is allowed to use. Each
+  message must have shape `{"role": str, "content": str | list[dict]}`.
+  For list content, version 0.1 helpers should extract text only from blocks
+  shaped like `{"type": "text", "text": str}` and ignore non-text blocks.
 - `existing_memory_files`: memory files present before extraction
 - `candidate_memory_files`: memory files after the candidate extraction output
 - `expected_memory_filenames`: memory filenames that should exist after
@@ -256,6 +259,10 @@ Version 0.1 treats `metadata.type` as valid only when it resolves to one of:
 If a case has no typed expectations, `memory_type_accuracy` should be `None` and
 excluded from aggregate type accuracy.
 
+If no candidate file is parseable, `field_completeness_rate` is defined as
+`0.0`. This treats a fully unparseable extraction output as maximally
+incomplete rather than excluding the metric from aggregates.
+
 ### 9.2 Coverage Metrics
 
 Each case should report:
@@ -328,6 +335,10 @@ matching rule as `expected_fact_coverage`: every normalized token from the
 forbidden fact appears in at least one candidate memory's combined `name`,
 `description`, and `content`.
 
+If `forbidden_facts` is empty, `noise_suppression_rate` should be `None` and
+excluded from aggregate noise-suppression means. `forbidden_fact_leak_count`
+should still be reported as `0`.
+
 Forbidden facts should cover deterministic examples such as:
 
 - one-off task details
@@ -379,6 +390,7 @@ Recommended scorecard fields:
 - `mean_expected_memory_coverage`
 - `mean_expected_fact_coverage`
 - `mean_grounding_rate`
+- `n_noise_cases`
 - `mean_noise_suppression_rate`
 - `total_forbidden_fact_leak_count`
 - `n_type_cases`
@@ -410,7 +422,9 @@ Recommended healthy-case assertions:
 
 These healthy-case assertions apply to positive benchmark cases whose candidate
 output is intended to be good. They are not meant to apply to intentionally
-broken risk cases.
+broken risk cases. The `noise_suppression_rate == 1.0` assertion applies only
+to positive cases that configure non-empty `forbidden_facts`; cases without
+forbidden facts should report `noise_suppression_rate is None`.
 
 Recommended risk-case assertions:
 
