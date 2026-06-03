@@ -275,3 +275,52 @@ async def test_l4_failure_still_marks_attempt_but_no_token_gain(tmp_path, monkey
     assert stats.auto_tokens_freed == 0
     assert all("[Conversation summary]" not in text for text in summary_texts)
     assert state.consecutive_autocompact_failures == 1
+
+
+@pytest.mark.asyncio
+async def test_end_to_end_contributions_telescope_to_total_delta(tmp_path, monkeypatch):
+    pipeline = _make_pipeline(tmp_path)
+    messages: list[dict] = []
+    messages.append(
+        _tool_result_message(
+            "Collecting demo\nDownloading demo\nSuccessfully installed demo\n" + ("x" * 1200),
+            tool_use_id="noise-1",
+        )
+    )
+    messages.extend(_compressible_round("read_file", "tool-1", "A" * 1800))
+    messages.extend(_compressible_round("run_shell", "tool-2", "B" * 1800))
+    for turn_id in range(12):
+        messages.extend(_exchange(turn_id, text_size=1200))
+
+    async def _fake_autocompact(self, current, system_prompt):
+        return "condensed summary"
+
+    monkeypatch.setattr(ContextPipeline, "_autocompact", _fake_autocompact)
+
+    _compressed, stats = await pipeline.compress(
+        messages,
+        current_tokens=None,
+        context_limit=1000,
+        threshold=0.1,
+    )
+
+    per_level = (
+        stats.snip_tokens_freed
+        + stats.micro_tokens_freed
+        + stats.collapse_tokens_freed
+        + stats.auto_tokens_freed
+    )
+
+    positive_levels = sum(
+        value > 0
+        for value in (
+            stats.snip_tokens_freed,
+            stats.micro_tokens_freed,
+            stats.collapse_tokens_freed,
+            stats.auto_tokens_freed,
+        )
+    )
+
+    assert stats.tokens_before > stats.tokens_after
+    assert positive_levels >= 2
+    assert per_level == stats.tokens_before - stats.tokens_after
