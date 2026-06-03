@@ -4,10 +4,12 @@ from tests.memory.helpers.index_eval import (
     build_index_scorecard,
     compute_index_metrics,
     compute_generated_index_metrics,
+    format_index_scorecard,
     generated_index_cases,
     raw_index_risk_cases,
     scan_raw_index_links,
 )
+from xxcode.memory.index import MAX_ENTRYPOINT_BYTES
 
 
 def test_raw_link_scanner_keeps_duplicates_and_memory_md_references():
@@ -110,6 +112,8 @@ def test_generated_index_scorecard_reports_case_count(tmp_path):
 
     scorecard = build_index_scorecard(metrics)
 
+    print(format_index_scorecard(scorecard))
+
     assert scorecard.n_cases == len(generated_index_cases())
     assert scorecard.mean_coverage_rate == 1.0
     assert scorecard.mean_stale_reference_rate == 0.0
@@ -165,6 +169,32 @@ def test_raw_risk_cases_detect_their_expected_risks():
     assert metrics_by_case["raw-stale-reference"].stale_reference_rate > 0.0
     assert metrics_by_case["raw-duplicate-reference"].duplicate_reference_rate > 0.0
     assert metrics_by_case["raw-generic-description"].generic_description_rate > 0.0
+
+
+def test_budget_metrics_detect_truncation_risk():
+    long_line = "- [Huge](huge.md) - " + ("x" * MAX_ENTRYPOINT_BYTES)
+    metrics = compute_index_metrics(
+        long_line + "\n",
+        {"huge.md": _memory_file("reference", "Huge", "Huge memory")},
+        case_id="budget-risk",
+    )
+
+    assert metrics.byte_utilization > 1.0
+    assert metrics.was_byte_truncated is True
+
+
+def test_index_scorecard_summary_includes_key_metrics(tmp_path):
+    metrics = [
+        compute_generated_index_metrics(case, tmp_path / case.case_id)
+        for case in generated_index_cases()
+    ]
+    scorecard = build_index_scorecard(metrics)
+
+    summary = format_index_scorecard(scorecard)
+
+    assert "n_cases=" in summary
+    assert "mean_coverage_rate=1.000" in summary
+    assert "truncated_case_count=0" in summary
 
 
 def _memory_file(memory_type: str, name: str, description: str) -> str:

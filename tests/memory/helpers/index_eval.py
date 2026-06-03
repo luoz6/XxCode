@@ -348,6 +348,22 @@ def build_index_scorecard(
     )
 
 
+def format_index_scorecard(scorecard: IndexOrganizationScorecard) -> str:
+    return (
+        "index "
+        f"n_cases={scorecard.n_cases} "
+        f"mean_coverage_rate={scorecard.mean_coverage_rate:.3f} "
+        f"mean_stale_reference_rate={scorecard.mean_stale_reference_rate:.3f} "
+        f"mean_duplicate_reference_rate={scorecard.mean_duplicate_reference_rate:.3f} "
+        f"mean_parseable_line_rate={scorecard.mean_parseable_line_rate:.3f} "
+        f"mean_description_present_rate={scorecard.mean_description_present_rate:.3f} "
+        f"mean_generic_description_rate={scorecard.mean_generic_description_rate:.3f} "
+        f"mean_discriminative_token_rate={scorecard.mean_discriminative_token_rate:.3f} "
+        f"truncated_case_count={scorecard.truncated_case_count} "
+        f"type_order_adherence_rate={scorecard.type_order_adherence_rate:.3f}"
+    )
+
+
 def _materialize_generated_case(
     case: GeneratedIndexEvalCase,
     memory_dir: Path,
