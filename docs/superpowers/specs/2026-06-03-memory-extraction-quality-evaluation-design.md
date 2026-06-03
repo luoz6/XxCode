@@ -166,8 +166,8 @@ Each case should define:
 - `expected_memory_filenames: set[str]`
 - `expected_facts: set[str]`
 - `expected_types: dict[str, str]`
-- `source_evidence: dict[str, set[str]]`
 - optional `candidate_claims: set[str]`
+- optional `source_evidence: dict[str, set[str]]`
 - optional `forbidden_facts: set[str]`
 - optional `duplicate_facts: set[str]`
 - optional `expected_latest_facts: set[str]`
@@ -185,10 +185,12 @@ Field meanings:
   extraction
 - `expected_facts`: durable facts that should be represented after extraction
 - `expected_types`: expected memory type per candidate filename
-- `source_evidence`: substrings that must appear in the conversation to ground
-  each scored claim
 - `candidate_claims`: curated claims to score for grounding; when omitted,
   helpers should default this to `expected_facts`
+- `source_evidence`: optional evidence override; maps each scored claim to
+  substrings that must appear in the conversation to ground that claim. When a
+  claim has no explicit evidence override, helpers should use the claim text
+  itself as the evidence string.
 - `forbidden_facts`: facts that should not appear in memory output because they
   are ephemeral, trivial, already obsolete, or noise
 - `duplicate_facts`: facts already represented by `existing_memory_files` that
@@ -202,6 +204,11 @@ Field meanings:
   candidate output
 - `risk_labels`: human-readable labels for negative cases, such as
   `noise`, `duplicate`, `wrong-type`, `ungrounded`, or `conflict`
+
+`expected_memory_filenames` and `candidate_memory_files` are intentionally
+separate despite their similar names. The former is the gold set of filenames
+that should exist after extraction; the latter is the full candidate output file
+map being evaluated.
 
 ### 8.3 Candidate Output Semantics
 
@@ -265,7 +272,15 @@ Definitions:
 
 Version 0.1 uses deterministic lexical matching. A fact is represented when all
 normalized tokens from that expected fact are present in at least one candidate
-memory's title, description, or content.
+memory's `name`, `description`, or `content`.
+
+Normalization is fixed for version 0.1:
+
+1. lowercase the input text
+2. extract tokens with the regex `[a-z0-9]+`
+3. treat a fact as represented when every token from the fact is present in the
+   token set of at least one candidate memory's combined `name`, `description`,
+   and `content`
 
 This is intentionally not semantic equivalence. It is a stable first-pass
 signal for whether curated expected information is present.
@@ -275,19 +290,20 @@ signal for whether curated expected information is present.
 Each case should report:
 
 - `grounding_rate`
-- `ungrounded_fact_count`
 
 Definitions:
 
 - `grounding_rate`: fraction of candidate extracted facts whose configured
   evidence substrings appear in the source conversation
-- `ungrounded_fact_count`: number of candidate fact claims without matching
-  evidence
 
 Version 0.1 grounding should be evidence-driven, not free-form semantic
 judgment. Each claim in `candidate_claims` maps to one or more required evidence
-substrings in `source_evidence`. The evaluator normalizes both conversation text
-and evidence strings before checking containment.
+strings. If `source_evidence` provides an override for a claim, helpers should
+use that set. Otherwise helpers should use the claim text itself as the single
+evidence string. The evaluator normalizes both conversation text and evidence
+strings with the same `[a-z0-9]+` token rule used for fact coverage, then checks
+whether every evidence token is present in the normalized conversation token
+set.
 
 When `candidate_claims` is omitted, helpers should use `expected_facts` as the
 grounding claim set. Version 0.1 should not attempt open-ended hallucination
@@ -306,6 +322,11 @@ Definitions:
   candidate output
 - `forbidden_fact_leak_count`: number of forbidden facts represented in
   candidate output
+
+A forbidden fact is represented by candidate output using the same lexical
+matching rule as `expected_fact_coverage`: every normalized token from the
+forbidden fact appears in at least one candidate memory's combined `name`,
+`description`, and `content`.
 
 Forbidden facts should cover deterministic examples such as:
 
@@ -333,8 +354,11 @@ Definitions:
 Version 0.1 uses curated case metadata to identify duplicate and conflict
 expectations. `duplicate_facts` defines facts that are already present before
 extraction and should not appear in newly created files. `expected_latest_facts`
-and `obsolete_facts` define the conflict/update expectation. The evaluator
-should not attempt global duplicate detection across arbitrary memory content.
+and `obsolete_facts` define the conflict/update expectation. An obsolete fact is
+considered retained if the lexical fact matcher finds it in any candidate
+memory's `name`, `description`, or `content`; it does not require the old slug
+or filename to remain. The evaluator should not attempt global duplicate
+detection across arbitrary memory content.
 
 If `duplicate_facts` is empty, `duplicate_control_rate` should be `None` and
 excluded from aggregate duplicate rate.
@@ -355,19 +379,19 @@ Recommended scorecard fields:
 - `mean_expected_memory_coverage`
 - `mean_expected_fact_coverage`
 - `mean_grounding_rate`
-- `total_ungrounded_fact_count`
 - `mean_noise_suppression_rate`
 - `total_forbidden_fact_leak_count`
 - `n_type_cases`
-- `memory_type_accuracy_rate`
+- `mean_memory_type_accuracy`
 - `n_duplicate_cases`
-- `duplicate_control_rate`
+- `mean_duplicate_control_rate`
 - `n_conflict_cases`
-- `conflict_update_correctness_rate`
+- `mean_conflict_update_correctness`
 
 Each optional metric family should include its own case count so aggregates are
-interpretable. For example, `duplicate_control_rate=1.0` over `n_duplicate_cases=1`
-means something different from the same rate over 20 cases.
+interpretable. For example, `mean_duplicate_control_rate=1.0` over
+`n_duplicate_cases=1` means something different from the same rate over 20
+cases.
 
 The suite should retain raw per-case metrics for diagnostics.
 
@@ -384,11 +408,15 @@ Recommended healthy-case assertions:
 - `grounding_rate == 1.0`
 - `noise_suppression_rate == 1.0`
 
+These healthy-case assertions apply to positive benchmark cases whose candidate
+output is intended to be good. They are not meant to apply to intentionally
+broken risk cases.
+
 Recommended risk-case assertions:
 
 - wrong-type case should produce `memory_type_accuracy < 1.0`
 - missing-fact case should produce `expected_fact_coverage < 1.0`
-- ungrounded case should produce `ungrounded_fact_count > 0`
+- ungrounded case should produce `grounding_rate < 1.0`
 - noise-leak case should produce `forbidden_fact_leak_count > 0`
 - duplicate case should produce `duplicate_control_rate == 0.0`
 - conflict case should produce `conflict_update_correctness == 0.0`
@@ -410,6 +438,10 @@ Responsibilities for `extraction_eval.py`:
 - define extraction eval case dataclasses
 - materialize existing and candidate memory directories
 - parse candidate memory files through production `parse_memory_file(...)`
+- treat `parse_memory_file(...) -> None` as an invalid candidate output for
+  metric purposes, not as a helper crash
+- use the returned `MemoryEntry` fields `name`, `description`, `content`, and
+  `metadata` for quality checks
 - normalize conversation and memory text
 - compute validity metrics
 - compute coverage metrics
@@ -442,7 +474,8 @@ For each extraction output case:
 3. parse candidate files with `parse_memory_file(...)`
 4. compare existing and candidate file maps to classify create/update/delete/no-op
 5. flatten source conversation into normalized text
-6. flatten candidate memory title, description, and content into normalized text
+6. flatten candidate memory `name`, `description`, and `content` into
+   normalized text
 7. compute validity, coverage, grounding, noise, duplicate, and conflict metrics
 8. aggregate metrics into a scorecard
 9. print a compact scorecard summary in pytest output
