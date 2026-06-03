@@ -3,10 +3,15 @@ import pytest
 from tests.context.helpers.context_eval import (
     CompressionDiagnostics,
     ContextEvalCase,
+    ContextEvalMetrics,
     ContextSnapshot,
     RecallDiagnostics,
+    build_context_eval_scorecard,
+    compute_context_eval_metrics,
+    format_context_eval_scorecard,
     render_flattened_snapshot,
     run_context_case,
+    semantic_benchmark_cases,
 )
 
 
@@ -262,3 +267,57 @@ async def test_run_context_case_applies_compression_and_budget_checks(tmp_path):
     assert snapshot.compression_diagnostics.compression_used is True
     assert snapshot.compression_diagnostics.level_reached == 1
     assert snapshot.token_counts["prepared_messages_tokens"] < case.budget_expectation["soft_limit_tokens"]
+
+
+def test_compute_context_eval_metrics_counts_required_present_absent_and_budget():
+    case = _compressing_case()
+    snapshot = ContextSnapshot(
+        case_id=case.case_id,
+        system_prompt="system",
+        prepared_messages=[],
+        flattened_text_snapshot="Keep processor.py as the current focus.",
+        structured_snapshot_view=None,
+        token_counts={
+            "prepared_messages_tokens": 120,
+            "flattened_snapshot_tokens": 150,
+        },
+        recall_diagnostics=case.expected_recall_diagnostics,
+        compression_diagnostics=case.expected_compression_diagnostics,
+    )
+
+    metrics = compute_context_eval_metrics(case, snapshot)
+
+    assert metrics == ContextEvalMetrics(
+        case_id=case.case_id,
+        required_content_hit=1.0,
+        required_order_pass=1.0,
+        section_presence_pass=1.0,
+        recent_context_preserved=1.0,
+        stale_content_exclusion_pass=1.0,
+        forbidden_content_absence_pass=1.0,
+        budget_pass=1.0,
+        recall_activation_pass=1.0,
+        compression_activation_pass=1.0,
+        snapshot_validity_pass=1.0,
+    )
+
+
+@pytest.mark.asyncio
+async def test_semantic_benchmark_cases_produce_passing_scorecard(tmp_path):
+    metrics = []
+    for case in semantic_benchmark_cases():
+        snapshot = await run_context_case(
+            case,
+            memory_dir=tmp_path / case.case_id / "memory",
+            cwd=tmp_path / case.case_id / "cwd",
+        )
+        metrics.append(compute_context_eval_metrics(case, snapshot))
+
+    scorecard = build_context_eval_scorecard(metrics)
+    print(format_context_eval_scorecard(scorecard))
+
+    assert scorecard.n_cases == len(semantic_benchmark_cases())
+    assert scorecard.required_content_hit_rate == 1.0
+    assert scorecard.forbidden_content_absence_rate == 1.0
+    assert scorecard.budget_pass_rate == 1.0
+    assert scorecard.snapshot_validity_rate == 1.0

@@ -73,6 +73,36 @@ class ContextSnapshot:
     compression_diagnostics: CompressionDiagnostics
 
 
+@dataclass(frozen=True)
+class ContextEvalMetrics:
+    case_id: str
+    required_content_hit: float
+    required_order_pass: float
+    section_presence_pass: float
+    recent_context_preserved: float | None
+    stale_content_exclusion_pass: float | None
+    forbidden_content_absence_pass: float
+    budget_pass: float
+    recall_activation_pass: float | None
+    compression_activation_pass: float | None
+    snapshot_validity_pass: float
+
+
+@dataclass(frozen=True)
+class ContextEvalScorecard:
+    n_cases: int
+    required_content_hit_rate: float
+    required_order_pass_rate: float
+    section_presence_rate: float
+    recent_context_preservation_rate: float
+    stale_content_exclusion_rate: float
+    forbidden_content_absence_rate: float
+    budget_pass_rate: float
+    recall_activation_rate: float
+    compression_activation_rate: float
+    snapshot_validity_rate: float
+
+
 class DeterministicRecallClient:
     async def complete(
         self,
@@ -97,6 +127,99 @@ def render_flattened_snapshot(system_prompt: str, prepared_messages: list[dict[s
         text = _render_message_text(message)
         parts.append(f"[MESSAGE role={role}]\n{text}")
     return "\n\n".join(parts)
+
+
+def compute_context_eval_metrics(case: ContextEvalCase, snapshot: ContextSnapshot) -> ContextEvalMetrics:
+    required_content_hit = _fraction(
+        [anchor in snapshot.flattened_text_snapshot for anchor in case.expected_present]
+    )
+    forbidden_content_absence = _fraction(
+        [anchor not in snapshot.flattened_text_snapshot for anchor in case.expected_absent]
+    )
+    order_pass = _fraction(
+        [
+            snapshot.flattened_text_snapshot.find(earlier) <= snapshot.flattened_text_snapshot.find(later)
+            and snapshot.flattened_text_snapshot.find(earlier) != -1
+            and snapshot.flattened_text_snapshot.find(later) != -1
+            for earlier, later in case.expected_order
+        ]
+    )
+    recent_context_preserved = _optional_fraction(
+        [anchor in snapshot.flattened_text_snapshot for anchor in case.expected_recent_present]
+    )
+    stale_content_exclusion_pass = _optional_fraction(
+        [anchor not in snapshot.flattened_text_snapshot for anchor in case.expected_stale_absent]
+    )
+    budget_pass = 1.0 if (
+        snapshot.token_counts["prepared_messages_tokens"] < case.budget_expectation["soft_limit_tokens"]
+    ) else 0.0
+    recall_activation_pass = 1.0 if (
+        snapshot.recall_diagnostics == case.expected_recall_diagnostics
+    ) else 0.0
+    compression_activation_pass = 1.0 if (
+        snapshot.compression_diagnostics == case.expected_compression_diagnostics
+    ) else 0.0
+    section_presence = 1.0
+    snapshot_validity = 1.0 if snapshot.flattened_text_snapshot.strip() else 0.0
+    return ContextEvalMetrics(
+        case_id=case.case_id,
+        required_content_hit=required_content_hit,
+        required_order_pass=order_pass,
+        section_presence_pass=section_presence,
+        recent_context_preserved=recent_context_preserved,
+        stale_content_exclusion_pass=stale_content_exclusion_pass,
+        forbidden_content_absence_pass=forbidden_content_absence,
+        budget_pass=budget_pass,
+        recall_activation_pass=recall_activation_pass,
+        compression_activation_pass=compression_activation_pass,
+        snapshot_validity_pass=snapshot_validity,
+    )
+
+
+def build_context_eval_scorecard(metrics: list[ContextEvalMetrics]) -> ContextEvalScorecard:
+    if not metrics:
+        return ContextEvalScorecard(
+            n_cases=0,
+            required_content_hit_rate=0.0,
+            required_order_pass_rate=0.0,
+            section_presence_rate=0.0,
+            recent_context_preservation_rate=0.0,
+            stale_content_exclusion_rate=0.0,
+            forbidden_content_absence_rate=0.0,
+            budget_pass_rate=0.0,
+            recall_activation_rate=0.0,
+            compression_activation_rate=0.0,
+            snapshot_validity_rate=0.0,
+        )
+    return ContextEvalScorecard(
+        n_cases=len(metrics),
+        required_content_hit_rate=sum(m.required_content_hit for m in metrics) / len(metrics),
+        required_order_pass_rate=sum(m.required_order_pass for m in metrics) / len(metrics),
+        section_presence_rate=sum(m.section_presence_pass for m in metrics) / len(metrics),
+        recent_context_preservation_rate=_mean_optional([m.recent_context_preserved for m in metrics]),
+        stale_content_exclusion_rate=_mean_optional([m.stale_content_exclusion_pass for m in metrics]),
+        forbidden_content_absence_rate=sum(m.forbidden_content_absence_pass for m in metrics) / len(metrics),
+        budget_pass_rate=sum(m.budget_pass for m in metrics) / len(metrics),
+        recall_activation_rate=_mean_optional([m.recall_activation_pass for m in metrics]),
+        compression_activation_rate=_mean_optional([m.compression_activation_pass for m in metrics]),
+        snapshot_validity_rate=sum(m.snapshot_validity_pass for m in metrics) / len(metrics),
+    )
+
+
+def format_context_eval_scorecard(scorecard: ContextEvalScorecard) -> str:
+    return (
+        "context-eval "
+        f"n_cases={scorecard.n_cases} "
+        f"required_content_hit_rate={scorecard.required_content_hit_rate:.3f} "
+        f"required_order_pass_rate={scorecard.required_order_pass_rate:.3f} "
+        f"forbidden_content_absence_rate={scorecard.forbidden_content_absence_rate:.3f} "
+        f"budget_pass_rate={scorecard.budget_pass_rate:.3f} "
+        f"snapshot_validity_rate={scorecard.snapshot_validity_rate:.3f}"
+    )
+
+
+def semantic_benchmark_cases() -> list[ContextEvalCase]:
+    return [_simple_semantic_case(), _memory_semantic_case(), _compression_semantic_case()]
 
 
 async def run_context_case(
@@ -307,3 +430,166 @@ def _derived_threshold(case: ContextEvalCase) -> float:
     if case.expected_compression_level >= 1:
         return 0.5
     return 1.0
+
+
+def _simple_semantic_case() -> ContextEvalCase:
+    return ContextEvalCase(
+        case_id="semantic-constraint",
+        scenario="Preserve a direct user constraint.",
+        cwd_files={"CLAUDE.md": "Always preserve direct user constraints."},
+        messages=[
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "Do not modify settings.py"}],
+            }
+        ],
+        memory_index_content="",
+        memory_files={},
+        target_turn_index=0,
+        expected_compression_level=0,
+        expected_present=["Do not modify settings.py"],
+        expected_absent=[],
+        expected_recent_present=["Do not modify settings.py"],
+        expected_stale_absent=[],
+        expected_order=[],
+        required_sections=[],
+        expected_recall_diagnostics=RecallDiagnostics(
+            index_injected=True,
+            recalled_count=0,
+            recall_empty=True,
+        ),
+        expected_compression_diagnostics=CompressionDiagnostics(
+            compression_used=False,
+            level_reached=0,
+            summary_injected=False,
+        ),
+        budget_expectation={"soft_limit_tokens": 4000, "hard_limit_tokens": 8000},
+    )
+
+
+def _memory_semantic_case() -> ContextEvalCase:
+    return ContextEvalCase(
+        case_id="semantic-memory",
+        scenario="Recall relevant memory into the current snapshot.",
+        cwd_files={"CLAUDE.md": "Project instructions."},
+        messages=[
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "Please plan the dataframe analysis flow."}],
+            }
+        ],
+        memory_index_content=(
+            "- [Python Style](python-style.md) - User prefers pandas dataframe analysis\n"
+        ),
+        memory_files={
+            "python-style.md": (
+                "---\nmetadata:\n  type: user\n---\n\n"
+                "Use pandas for dataframe-style analysis.\n"
+            ),
+        },
+        target_turn_index=0,
+        expected_compression_level=0,
+        expected_present=[
+            "Use pandas for dataframe-style analysis.",
+            "Please plan the dataframe analysis flow.",
+        ],
+        expected_absent=[],
+        expected_recent_present=["Please plan the dataframe analysis flow."],
+        expected_stale_absent=[],
+        expected_order=[
+            ("Use pandas for dataframe-style analysis.", "Please plan the dataframe analysis flow."),
+        ],
+        required_sections=[],
+        expected_recall_diagnostics=RecallDiagnostics(
+            index_injected=True,
+            recalled_count=1,
+            recall_empty=False,
+        ),
+        expected_compression_diagnostics=CompressionDiagnostics(
+            compression_used=False,
+            level_reached=0,
+            summary_injected=False,
+        ),
+        budget_expectation={"soft_limit_tokens": 4000, "hard_limit_tokens": 8000},
+    )
+
+
+def _compression_semantic_case() -> ContextEvalCase:
+    noisy_result = (
+        "Collecting demo-package\n"
+        "Downloading demo-package\n"
+        "Successfully installed demo-package\n\n"
+        + ("Collecting demo-package\nDownloading demo-package\n" * 80)
+    )
+    return ContextEvalCase(
+        case_id="semantic-compression",
+        scenario="Compress noisy historical tool output.",
+        cwd_files={"CLAUDE.md": "Respect recent task context."},
+        messages=[
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-1",
+                        "name": "run_shell",
+                        "input": {"command": "pip install demo-package"},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-1",
+                        "content": noisy_result,
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "Keep processor.py as the current focus."}],
+            },
+        ],
+        memory_index_content="",
+        memory_files={},
+        target_turn_index=2,
+        expected_compression_level=1,
+        expected_present=["Keep processor.py as the current focus."],
+        expected_absent=["Collecting demo-package\nDownloading demo-package\nCollecting demo-package"],
+        expected_recent_present=["Keep processor.py as the current focus."],
+        expected_stale_absent=["Successfully installed demo-package"],
+        expected_order=[],
+        required_sections=[],
+        expected_recall_diagnostics=RecallDiagnostics(
+            index_injected=True,
+            recalled_count=0,
+            recall_empty=True,
+        ),
+        expected_compression_diagnostics=CompressionDiagnostics(
+            compression_used=True,
+            level_reached=1,
+            summary_injected=False,
+        ),
+        budget_expectation={"soft_limit_tokens": 200, "hard_limit_tokens": 400},
+    )
+
+
+def _fraction(values: list[bool]) -> float:
+    if not values:
+        return 1.0
+    return sum(1.0 for value in values if value) / len(values)
+
+
+def _optional_fraction(values: list[bool]) -> float | None:
+    if not values:
+        return None
+    return _fraction(values)
+
+
+def _mean_optional(values: list[float | None]) -> float:
+    present = [value for value in values if value is not None]
+    if not present:
+        return 0.0
+    return sum(present) / len(present)
