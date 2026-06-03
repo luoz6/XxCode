@@ -4,7 +4,7 @@
 
 **Goal:** Add a deterministic, CI-safe benchmark that measures memory extraction output quality independently from live LLM extraction behavior.
 
-**Architecture:** Keep the evaluation test-local. Add `tests/memory/helpers/extraction_eval.py` with case models, memory parsing, operation classification, lexical fact matching, metrics, scorecard aggregation, and compact formatting. Add `tests/memory/test_extraction_eval.py` with TDD coverage for validity, coverage, grounding, noise, duplicate, conflict, update/delete expectations, curated cases, and reporting.
+**Architecture:** Keep the evaluation test-local. Add `XxCode/tests/memory/helpers/extraction_eval.py` with case models, memory parsing, operation classification, lexical fact matching, metrics, scorecard aggregation, and compact formatting. Add `XxCode/tests/memory/test_extraction_eval.py` with TDD coverage for validity, coverage, grounding, noise, duplicate, conflict, update/delete expectations, curated cases, and reporting.
 
 **Tech Stack:** Python 3.11, pytest, dataclasses, pathlib, existing `xxcode.memory.models.parse_memory_file` and `xxcode.memory.models.MemoryType`
 
@@ -12,24 +12,25 @@
 
 ## File Structure
 
-- Create: `tests/memory/helpers/extraction_eval.py`
+- Command working directory: run all commands from `F:\agent\XxCode`. The actual repository root is `F:\agent\XxCode\XxCode`, so file paths in this plan include the leading `XxCode/` directory. Git commands use `git -C XxCode ...` with repo-relative path arguments.
+- Create: `XxCode/tests/memory/helpers/extraction_eval.py`
   Responsibility: extraction evaluation dataclasses, candidate memory materialization/parsing, operation classification, conversation flattening, lexical matching, metric computation, curated cases, scorecards, and compact report formatting.
-- Create: `tests/memory/test_extraction_eval.py`
+- Create: `XxCode/tests/memory/test_extraction_eval.py`
   Responsibility: deterministic TDD coverage for extraction output quality metrics and benchmark scorecards.
-- Reuse without modification: `src/xxcode/memory/models.py`
-  Responsibility: production `parse_memory_file(...)`, `MemoryEntry`, and `MemoryType` behavior under evaluation.
-- Reuse without modification: `tests/memory/helpers/__init__.py`
+- Reuse without modification: `XxCode/src/xxcode/memory/models.py`
+  Responsibility: production `parse_memory_file(...)`, `serialize_memory_file(...)`, `MemoryEntry`, and `MemoryType` behavior under evaluation.
+- Reuse without modification: `XxCode/tests/memory/helpers/__init__.py`
   Responsibility: existing test helper package marker.
 
 ## Task 1: Add Core Case Model, Parsing, Operations, And Validity Metrics
 
 **Files:**
-- Create: `tests/memory/helpers/extraction_eval.py`
-- Create: `tests/memory/test_extraction_eval.py`
+- Create: `XxCode/tests/memory/helpers/extraction_eval.py`
+- Create: `XxCode/tests/memory/test_extraction_eval.py`
 
 - [ ] **Step 1: Write failing tests for conversation flattening, operation classification, and validity metrics**
 
-Create `tests/memory/test_extraction_eval.py` with:
+Create `XxCode/tests/memory/test_extraction_eval.py` with:
 
 ```python
 import pytest
@@ -39,6 +40,7 @@ from tests.memory.helpers.extraction_eval import (
     classify_operations,
     compute_extraction_metrics,
     flatten_conversation_text,
+    memory_file,
 )
 
 
@@ -89,7 +91,7 @@ def test_valid_candidate_memory_reports_validity_and_completeness():
         ],
         existing_memory_files={},
         candidate_memory_files={
-            "python-style.md": _memory_file(
+            "python-style.md": memory_file(
                 "user",
                 "Python Style",
                 "User prefers snake_case in Python tests",
@@ -111,42 +113,30 @@ def test_valid_candidate_memory_reports_validity_and_completeness():
     assert metrics.operations.created_filenames == {"python-style.md"}
 
 
-def test_unparseable_candidate_counts_as_invalid_and_incomplete():
+def test_incomplete_candidate_memory_reduces_field_completeness():
     case = ExtractionEvalCase(
-        case_id="invalid-candidate",
+        case_id="incomplete-candidate",
         conversation=[],
         existing_memory_files={},
         candidate_memory_files={
-            "broken.md": "Body without YAML frontmatter\n",
+            "incomplete.md": memory_file(
+                "user",
+                "Incomplete",
+                "",
+                "",
+            ),
         },
-        expected_memory_filenames=set(),
+        expected_memory_filenames={"incomplete.md"},
         expected_facts=set(),
-        expected_types={},
+        expected_types={"incomplete.md": "user"},
     )
 
     metrics = compute_extraction_metrics(case)
 
-    assert metrics.write_validity_rate == 0.0
+    assert metrics.write_validity_rate == 1.0
     assert metrics.field_completeness_rate == 0.0
-    assert metrics.memory_type_accuracy is None
-    assert metrics.invalid_candidate_filenames == {"broken.md"}
-
-
-def _memory_file(
-    memory_type: str,
-    name: str,
-    description: str,
-    content: str,
-) -> str:
-    return (
-        "---\n"
-        f"name: {name}\n"
-        f"description: {description}\n"
-        "metadata:\n"
-        f"  type: {memory_type}\n"
-        "---\n\n"
-        f"{content}\n"
-    )
+    assert metrics.memory_type_accuracy == 1.0
+    assert metrics.invalid_candidate_filenames == set()
 ```
 
 - [ ] **Step 2: Run the new extraction evaluation tests to verify they fail**
@@ -154,14 +144,14 @@ def _memory_file(
 Run:
 
 ```powershell
-py -3.11 -m pytest tests/memory/test_extraction_eval.py -v
+py -3.11 -m pytest XxCode/tests/memory/test_extraction_eval.py -v
 ```
 
 Expected: FAIL with `ModuleNotFoundError` because `tests.memory.helpers.extraction_eval` does not exist.
 
 - [ ] **Step 3: Add core helper implementation**
 
-Create `tests/memory/helpers/extraction_eval.py` with:
+Create `XxCode/tests/memory/helpers/extraction_eval.py` with:
 
 ```python
 from __future__ import annotations
@@ -175,8 +165,8 @@ from typing import Any
 from xxcode.memory.models import (
     MemoryEntry,
     MemoryType,
-    _parse_frontmatter,
     parse_memory_file,
+    serialize_memory_file,
 )
 
 
@@ -279,6 +269,10 @@ def compute_extraction_metrics(case: ExtractionEvalCase) -> ExtractionMetrics:
         case.candidate_memory_files,
     )
     parsed, invalid_filenames = _parse_candidate_files(case)
+    parsed_existing, _existing_invalid_filenames = _parse_memory_files(
+        case.existing_memory_files,
+    )
+    parsed_for_type_checks = {**parsed_existing, **parsed}
     candidate_text_by_file = {
         filename: _entry_text(entry) for filename, entry in parsed.items()
     }
@@ -296,7 +290,7 @@ def compute_extraction_metrics(case: ExtractionEvalCase) -> ExtractionMetrics:
         else 0.0
     )
 
-    wrong_type_filenames = _wrong_type_filenames(case, parsed)
+    wrong_type_filenames = _wrong_type_filenames(case, parsed_for_type_checks)
     memory_type_accuracy = None
     if case.expected_types:
         memory_type_accuracy = _safe_div(
@@ -329,6 +323,22 @@ def compute_extraction_metrics(case: ExtractionEvalCase) -> ExtractionMetrics:
     )
 
 
+def memory_file(
+    memory_type: str,
+    name: str,
+    description: str,
+    content: str,
+) -> str:
+    return serialize_memory_file(
+        MemoryEntry(
+            name=name,
+            description=description,
+            content=content,
+            metadata={"type": memory_type},
+        )
+    )
+
+
 def _validate_case(case: ExtractionEvalCase) -> None:
     unknown_types = set(case.expected_types.values()) - _VALID_MEMORY_TYPES
     if unknown_types:
@@ -336,10 +346,13 @@ def _validate_case(case: ExtractionEvalCase) -> None:
             f"{case.case_id}: expected_types contains unknown memory types: "
             f"{sorted(unknown_types)}"
         )
-    missing_type_files = set(case.expected_types) - set(case.candidate_memory_files)
+    available_type_files = (
+        set(case.existing_memory_files) | set(case.candidate_memory_files)
+    )
+    missing_type_files = set(case.expected_types) - available_type_files
     if missing_type_files:
         raise ValueError(
-            f"{case.case_id}: expected_types references missing candidate files: "
+            f"{case.case_id}: expected_types references missing memory files: "
             f"{sorted(missing_type_files)}"
         )
     claims = case.candidate_claims or case.expected_facts
@@ -370,15 +383,21 @@ def _validate_case(case: ExtractionEvalCase) -> None:
 def _parse_candidate_files(
     case: ExtractionEvalCase,
 ) -> tuple[dict[str, MemoryEntry], set[str]]:
+    return _parse_memory_files(case.candidate_memory_files)
+
+
+def _parse_memory_files(
+    memory_files: dict[str, str],
+) -> tuple[dict[str, MemoryEntry], set[str]]:
     parsed: dict[str, MemoryEntry] = {}
     invalid: set[str] = set()
     with tempfile.TemporaryDirectory() as tmp:
         memory_dir = Path(tmp)
-        for filename, content in case.candidate_memory_files.items():
+        for filename, content in memory_files.items():
             path = memory_dir / filename
             path.write_text(content, encoding="utf-8")
             entry = parse_memory_file(path)
-            if entry is None or not _has_parseable_frontmatter(content):
+            if entry is None:
                 invalid.add(filename)
             else:
                 parsed[filename] = entry
@@ -387,11 +406,6 @@ def _parse_candidate_files(
 
 def _entry_text(entry: MemoryEntry) -> str:
     return "\n".join([entry.name, entry.description, entry.content])
-
-
-def _has_parseable_frontmatter(content: str) -> bool:
-    metadata, _body = _parse_frontmatter(content)
-    return bool(metadata)
 
 
 def _is_complete(entry: MemoryEntry) -> bool:
@@ -430,7 +444,7 @@ def _tokens(text: str) -> set[str]:
 Run:
 
 ```powershell
-py -3.11 -m pytest tests/memory/test_extraction_eval.py -v
+py -3.11 -m pytest XxCode/tests/memory/test_extraction_eval.py -v
 ```
 
 Expected: PASS with 4 tests.
@@ -440,19 +454,19 @@ Expected: PASS with 4 tests.
 Run:
 
 ```bash
-git add tests/memory/helpers/extraction_eval.py tests/memory/test_extraction_eval.py
-git commit -m "Add memory extraction evaluation validity metrics"
+git -C XxCode add tests/memory/helpers/extraction_eval.py tests/memory/test_extraction_eval.py
+git -C XxCode commit -m "Add memory extraction evaluation validity metrics"
 ```
 
 ## Task 2: Add Lexical Fact Coverage, Grounding, And Noise Metrics
 
 **Files:**
-- Modify: `tests/memory/helpers/extraction_eval.py`
-- Modify: `tests/memory/test_extraction_eval.py`
+- Modify: `XxCode/tests/memory/helpers/extraction_eval.py`
+- Modify: `XxCode/tests/memory/test_extraction_eval.py`
 
 - [ ] **Step 1: Write failing tests for fact coverage, grounding, and forbidden fact leakage**
 
-Append this to `tests/memory/test_extraction_eval.py`:
+Append this to `XxCode/tests/memory/test_extraction_eval.py`:
 
 ```python
 def test_expected_fact_coverage_uses_lexical_token_matching():
@@ -463,7 +477,7 @@ def test_expected_fact_coverage_uses_lexical_token_matching():
         ],
         existing_memory_files={},
         candidate_memory_files={
-            "python-style.md": _memory_file(
+            "python-style.md": memory_file(
                 "user",
                 "Python Style",
                 "User prefers snake_case",
@@ -493,7 +507,7 @@ def test_grounding_rate_uses_claim_text_as_default_evidence():
         ],
         existing_memory_files={},
         candidate_memory_files={
-            "analysis-style.md": _memory_file(
+            "analysis-style.md": memory_file(
                 "user",
                 "Analysis Style",
                 "Use pandas dataframes",
@@ -518,7 +532,7 @@ def test_grounding_rate_uses_source_evidence_override():
         ],
         existing_memory_files={},
         candidate_memory_files={
-            "path-style.md": _memory_file(
+            "path-style.md": memory_file(
                 "feedback",
                 "Path Style",
                 "Prefer pathlib APIs",
@@ -544,7 +558,7 @@ def test_forbidden_fact_leak_reduces_noise_suppression_rate():
         ],
         existing_memory_files={},
         candidate_memory_files={
-            "debug-note.md": _memory_file(
+            "debug-note.md": memory_file(
                 "project",
                 "Debug Note",
                 "Temporary port 5432 debug",
@@ -586,14 +600,14 @@ def test_empty_forbidden_facts_excludes_noise_suppression_rate():
 Run:
 
 ```powershell
-py -3.11 -m pytest tests/memory/test_extraction_eval.py::test_expected_fact_coverage_uses_lexical_token_matching tests/memory/test_extraction_eval.py::test_grounding_rate_uses_claim_text_as_default_evidence tests/memory/test_extraction_eval.py::test_grounding_rate_uses_source_evidence_override tests/memory/test_extraction_eval.py::test_forbidden_fact_leak_reduces_noise_suppression_rate tests/memory/test_extraction_eval.py::test_empty_forbidden_facts_excludes_noise_suppression_rate -v
+py -3.11 -m pytest XxCode/tests/memory/test_extraction_eval.py::test_expected_fact_coverage_uses_lexical_token_matching XxCode/tests/memory/test_extraction_eval.py::test_grounding_rate_uses_claim_text_as_default_evidence XxCode/tests/memory/test_extraction_eval.py::test_grounding_rate_uses_source_evidence_override XxCode/tests/memory/test_extraction_eval.py::test_forbidden_fact_leak_reduces_noise_suppression_rate XxCode/tests/memory/test_extraction_eval.py::test_empty_forbidden_facts_excludes_noise_suppression_rate -v
 ```
 
 Expected: FAIL because Task 1 helper returns fixed coverage, grounding, and noise values that do not yet inspect candidate content.
 
 - [ ] **Step 3: Implement lexical matching, grounding, and noise metrics**
 
-Update `compute_extraction_metrics(...)` in `tests/memory/helpers/extraction_eval.py` by replacing the temporary coverage, grounding, and noise fields with local variables:
+Update `compute_extraction_metrics(...)` in `XxCode/tests/memory/helpers/extraction_eval.py` by replacing the temporary coverage, grounding, and noise fields with local variables:
 
 ```python
     represented_expected_facts = _represented_facts(
@@ -675,7 +689,7 @@ def _grounding_rate(case: ExtractionEvalCase) -> float:
 Run:
 
 ```powershell
-py -3.11 -m pytest tests/memory/test_extraction_eval.py -v
+py -3.11 -m pytest XxCode/tests/memory/test_extraction_eval.py -v
 ```
 
 Expected: PASS with 9 tests.
@@ -685,23 +699,23 @@ Expected: PASS with 9 tests.
 Run:
 
 ```bash
-git add tests/memory/helpers/extraction_eval.py tests/memory/test_extraction_eval.py
-git commit -m "Add memory extraction coverage and grounding metrics"
+git -C XxCode add tests/memory/helpers/extraction_eval.py tests/memory/test_extraction_eval.py
+git -C XxCode commit -m "Add memory extraction coverage and grounding metrics"
 ```
 
 ## Task 3: Add Duplicate, Conflict, Update, And Delete Expectation Metrics
 
 **Files:**
-- Modify: `tests/memory/helpers/extraction_eval.py`
-- Modify: `tests/memory/test_extraction_eval.py`
+- Modify: `XxCode/tests/memory/helpers/extraction_eval.py`
+- Modify: `XxCode/tests/memory/test_extraction_eval.py`
 
 - [ ] **Step 1: Write failing tests for duplicate and conflict metrics**
 
-Append this to `tests/memory/test_extraction_eval.py`:
+Append this to `XxCode/tests/memory/test_extraction_eval.py`:
 
 ```python
 def test_duplicate_control_checks_only_newly_created_files():
-    existing = _memory_file(
+    existing = memory_file(
         "user",
         "Existing Style",
         "User prefers snake_case",
@@ -715,7 +729,7 @@ def test_duplicate_control_checks_only_newly_created_files():
         existing_memory_files={"existing-style.md": existing},
         candidate_memory_files={
             "existing-style.md": existing,
-            "duplicate-style.md": _memory_file(
+            "duplicate-style.md": memory_file(
                 "user",
                 "Duplicate Style",
                 "User prefers snake_case",
@@ -734,7 +748,7 @@ def test_duplicate_control_checks_only_newly_created_files():
 
 
 def test_duplicate_control_passes_when_duplicate_fact_is_not_in_created_file():
-    existing = _memory_file(
+    existing = memory_file(
         "user",
         "Existing Style",
         "User prefers snake_case",
@@ -765,7 +779,7 @@ def test_conflict_update_correctness_requires_latest_and_no_obsolete_fact():
             {"role": "user", "content": "Actually use pathlib instead of os.path."},
         ],
         existing_memory_files={
-            "path-style.md": _memory_file(
+            "path-style.md": memory_file(
                 "feedback",
                 "Path Style",
                 "Prefer os.path",
@@ -773,7 +787,7 @@ def test_conflict_update_correctness_requires_latest_and_no_obsolete_fact():
             ),
         },
         candidate_memory_files={
-            "path-style.md": _memory_file(
+            "path-style.md": memory_file(
                 "feedback",
                 "Path Style",
                 "Prefer pathlib",
@@ -801,7 +815,7 @@ def test_conflict_update_correctness_fails_when_obsolete_fact_remains():
             {"role": "user", "content": "Actually use pathlib instead of os.path."},
         ],
         existing_memory_files={
-            "path-style.md": _memory_file(
+            "path-style.md": memory_file(
                 "feedback",
                 "Path Style",
                 "Prefer os.path",
@@ -809,7 +823,7 @@ def test_conflict_update_correctness_fails_when_obsolete_fact_remains():
             ),
         },
         candidate_memory_files={
-            "path-style.md": _memory_file(
+            "path-style.md": memory_file(
                 "feedback",
                 "Path Style",
                 "Prefer pathlib but keep os.path",
@@ -831,11 +845,11 @@ def test_conflict_update_correctness_fails_when_obsolete_fact_remains():
 
 - [ ] **Step 2: Write failing tests for update/delete expectation validation**
 
-Append this to `tests/memory/test_extraction_eval.py`:
+Append this to `XxCode/tests/memory/test_extraction_eval.py`:
 
 ```python
 def test_expected_updated_filename_must_be_classified_as_updated():
-    unchanged = _memory_file(
+    unchanged = memory_file(
         "project",
         "Project Rule",
         "Always run tests",
@@ -857,7 +871,7 @@ def test_expected_updated_filename_must_be_classified_as_updated():
 
 
 def test_expected_deleted_filename_must_be_classified_as_deleted():
-    existing = _memory_file(
+    existing = memory_file(
         "project",
         "Temporary Note",
         "Temporary debug note",
@@ -883,7 +897,7 @@ def test_expected_deleted_filename_must_be_classified_as_deleted():
 Run:
 
 ```powershell
-py -3.11 -m pytest tests/memory/test_extraction_eval.py::test_duplicate_control_checks_only_newly_created_files tests/memory/test_extraction_eval.py::test_duplicate_control_passes_when_duplicate_fact_is_not_in_created_file tests/memory/test_extraction_eval.py::test_conflict_update_correctness_requires_latest_and_no_obsolete_fact tests/memory/test_extraction_eval.py::test_conflict_update_correctness_fails_when_obsolete_fact_remains tests/memory/test_extraction_eval.py::test_expected_updated_filename_must_be_classified_as_updated tests/memory/test_extraction_eval.py::test_expected_deleted_filename_must_be_classified_as_deleted -v
+py -3.11 -m pytest XxCode/tests/memory/test_extraction_eval.py::test_duplicate_control_checks_only_newly_created_files XxCode/tests/memory/test_extraction_eval.py::test_duplicate_control_passes_when_duplicate_fact_is_not_in_created_file XxCode/tests/memory/test_extraction_eval.py::test_conflict_update_correctness_requires_latest_and_no_obsolete_fact XxCode/tests/memory/test_extraction_eval.py::test_conflict_update_correctness_fails_when_obsolete_fact_remains XxCode/tests/memory/test_extraction_eval.py::test_expected_updated_filename_must_be_classified_as_updated XxCode/tests/memory/test_extraction_eval.py::test_expected_deleted_filename_must_be_classified_as_deleted -v
 ```
 
 Expected: FAIL because duplicate/conflict metrics still return `None` and update/delete expectation validation is not implemented.
@@ -975,7 +989,7 @@ def _conflict_update_correctness(
 Run:
 
 ```powershell
-py -3.11 -m pytest tests/memory/test_extraction_eval.py -v
+py -3.11 -m pytest XxCode/tests/memory/test_extraction_eval.py -v
 ```
 
 Expected: PASS with 15 tests.
@@ -985,19 +999,19 @@ Expected: PASS with 15 tests.
 Run:
 
 ```bash
-git add tests/memory/helpers/extraction_eval.py tests/memory/test_extraction_eval.py
-git commit -m "Add memory extraction duplicate and conflict metrics"
+git -C XxCode add tests/memory/helpers/extraction_eval.py tests/memory/test_extraction_eval.py
+git -C XxCode commit -m "Add memory extraction duplicate and conflict metrics"
 ```
 
 ## Task 4: Add Curated Benchmark Cases, Scorecard Aggregation, And Reporting
 
 **Files:**
-- Modify: `tests/memory/helpers/extraction_eval.py`
-- Modify: `tests/memory/test_extraction_eval.py`
+- Modify: `XxCode/tests/memory/helpers/extraction_eval.py`
+- Modify: `XxCode/tests/memory/test_extraction_eval.py`
 
 - [ ] **Step 1: Write failing tests for curated cases and scorecard aggregation**
 
-Append this import to the import list in `tests/memory/test_extraction_eval.py`:
+Append this import to the import list in `XxCode/tests/memory/test_extraction_eval.py`:
 
 ```python
     build_extraction_scorecard,
@@ -1005,7 +1019,7 @@ Append this import to the import list in `tests/memory/test_extraction_eval.py`:
     format_extraction_scorecard,
 ```
 
-Append these tests to `tests/memory/test_extraction_eval.py`:
+Append these tests to `XxCode/tests/memory/test_extraction_eval.py`:
 
 ```python
 def test_extraction_quality_cases_have_expected_positive_metrics():
@@ -1076,40 +1090,40 @@ def test_extraction_scorecard_summary_includes_key_metrics():
 Run:
 
 ```powershell
-py -3.11 -m pytest tests/memory/test_extraction_eval.py::test_extraction_quality_cases_have_expected_positive_metrics tests/memory/test_extraction_eval.py::test_extraction_quality_risk_cases_expose_expected_weaknesses tests/memory/test_extraction_eval.py::test_extraction_scorecard_excludes_none_metrics_from_optional_means tests/memory/test_extraction_eval.py::test_extraction_scorecard_summary_includes_key_metrics -v
+py -3.11 -m pytest XxCode/tests/memory/test_extraction_eval.py::test_extraction_quality_cases_have_expected_positive_metrics XxCode/tests/memory/test_extraction_eval.py::test_extraction_quality_risk_cases_expose_expected_weaknesses XxCode/tests/memory/test_extraction_eval.py::test_extraction_scorecard_excludes_none_metrics_from_optional_means XxCode/tests/memory/test_extraction_eval.py::test_extraction_scorecard_summary_includes_key_metrics -v
 ```
 
 Expected: FAIL because scorecard helpers and curated cases do not exist.
 
 - [ ] **Step 3: Add scorecard dataclass, curated cases, and formatting**
 
-Add this dataclass below `ExtractionMetrics` in `tests/memory/helpers/extraction_eval.py`:
+Add this dataclass below `ExtractionMetrics` in `XxCode/tests/memory/helpers/extraction_eval.py`:
 
 ```python
 @dataclass(frozen=True)
 class ExtractionScorecard:
-    n_cases: int
-    mean_write_validity_rate: float
-    mean_field_completeness_rate: float
-    mean_expected_memory_coverage: float
-    mean_expected_fact_coverage: float
-    mean_grounding_rate: float
-    n_noise_cases: int
-    mean_noise_suppression_rate: float
-    total_forbidden_fact_leak_count: int
-    n_type_cases: int
-    mean_memory_type_accuracy: float
-    n_duplicate_cases: int
-    mean_duplicate_control_rate: float
-    n_conflict_cases: int
-    mean_conflict_update_correctness: float
+    n_cases: int = 0
+    mean_write_validity_rate: float = 0.0
+    mean_field_completeness_rate: float = 0.0
+    mean_expected_memory_coverage: float = 0.0
+    mean_expected_fact_coverage: float = 0.0
+    mean_grounding_rate: float = 0.0
+    n_noise_cases: int = 0
+    mean_noise_suppression_rate: float = 0.0
+    total_forbidden_fact_leak_count: int = 0
+    n_type_cases: int = 0
+    mean_memory_type_accuracy: float = 0.0
+    n_duplicate_cases: int = 0
+    mean_duplicate_control_rate: float = 0.0
+    n_conflict_cases: int = 0
+    mean_conflict_update_correctness: float = 0.0
 ```
 
 Add these functions above `_validate_case(...)`:
 
 ```python
 def extraction_quality_cases() -> list[ExtractionEvalCase]:
-    existing_duplicate = _memory_file(
+    existing_duplicate = memory_file(
         "user",
         "Existing Style",
         "User prefers snake_case",
@@ -1123,7 +1137,7 @@ def extraction_quality_cases() -> list[ExtractionEvalCase]:
             ],
             existing_memory_files={},
             candidate_memory_files={
-                "python-style.md": _memory_file(
+                "python-style.md": memory_file(
                     "user",
                     "Python Style",
                     "User prefers snake_case in Python tests",
@@ -1153,7 +1167,7 @@ def extraction_quality_cases() -> list[ExtractionEvalCase]:
             ],
             existing_memory_files={},
             candidate_memory_files={
-                "testing-rule.md": _memory_file(
+                "testing-rule.md": memory_file(
                     "reference",
                     "Testing Rule",
                     "Always run tests",
@@ -1171,7 +1185,7 @@ def extraction_quality_cases() -> list[ExtractionEvalCase]:
             ],
             existing_memory_files={},
             candidate_memory_files={
-                "analysis-style.md": _memory_file(
+                "analysis-style.md": memory_file(
                     "user",
                     "Analysis Style",
                     "Use pandas",
@@ -1189,7 +1203,7 @@ def extraction_quality_cases() -> list[ExtractionEvalCase]:
             ],
             existing_memory_files={},
             candidate_memory_files={
-                "hallucinated-style.md": _memory_file(
+                "hallucinated-style.md": memory_file(
                     "user",
                     "Hallucinated Style",
                     "Use spark clusters",
@@ -1209,7 +1223,7 @@ def extraction_quality_cases() -> list[ExtractionEvalCase]:
             existing_memory_files={"existing-style.md": existing_duplicate},
             candidate_memory_files={
                 "existing-style.md": existing_duplicate,
-                "duplicate-style.md": _memory_file(
+                "duplicate-style.md": memory_file(
                     "user",
                     "Duplicate Style",
                     "User prefers snake_case",
@@ -1227,7 +1241,7 @@ def extraction_quality_cases() -> list[ExtractionEvalCase]:
                 {"role": "user", "content": "Actually use pathlib instead of os.path."},
             ],
             existing_memory_files={
-                "path-style.md": _memory_file(
+                "path-style.md": memory_file(
                     "feedback",
                     "Path Style",
                     "Prefer os.path",
@@ -1235,7 +1249,7 @@ def extraction_quality_cases() -> list[ExtractionEvalCase]:
                 ),
             },
             candidate_memory_files={
-                "path-style.md": _memory_file(
+                "path-style.md": memory_file(
                     "feedback",
                     "Path Style",
                     "Prefer pathlib but keep os.path",
@@ -1256,23 +1270,7 @@ def build_extraction_scorecard(
     metrics: list[ExtractionMetrics],
 ) -> ExtractionScorecard:
     if not metrics:
-        return ExtractionScorecard(
-            n_cases=0,
-            mean_write_validity_rate=0.0,
-            mean_field_completeness_rate=0.0,
-            mean_expected_memory_coverage=0.0,
-            mean_expected_fact_coverage=0.0,
-            mean_grounding_rate=0.0,
-            n_noise_cases=0,
-            mean_noise_suppression_rate=0.0,
-            total_forbidden_fact_leak_count=0,
-            n_type_cases=0,
-            mean_memory_type_accuracy=0.0,
-            n_duplicate_cases=0,
-            mean_duplicate_control_rate=0.0,
-            n_conflict_cases=0,
-            mean_conflict_update_correctness=0.0,
-        )
+        return ExtractionScorecard()
     n_cases = len(metrics)
     type_values = [m.memory_type_accuracy for m in metrics if m.memory_type_accuracy is not None]
     noise_values = [m.noise_suppression_rate for m in metrics if m.noise_suppression_rate is not None]
@@ -1317,30 +1315,13 @@ def format_extraction_scorecard(scorecard: ExtractionScorecard) -> str:
     )
 ```
 
-Add these helper functions near the bottom of `tests/memory/helpers/extraction_eval.py`:
+Add this helper function near the bottom of `XxCode/tests/memory/helpers/extraction_eval.py`. Do not add another memory-file serialization helper here; use the public `memory_file(...)` helper added in Task 1.
 
 ```python
 def _mean_optional(values: list[float]) -> float:
     if not values:
         return 0.0
     return sum(values) / len(values)
-
-
-def _memory_file(
-    memory_type: str,
-    name: str,
-    description: str,
-    content: str,
-) -> str:
-    return (
-        "---\n"
-        f"name: {name}\n"
-        f"description: {description}\n"
-        "metadata:\n"
-        f"  type: {memory_type}\n"
-        "---\n\n"
-        f"{content}\n"
-    )
 ```
 
 - [ ] **Step 4: Run extraction evaluation tests to verify Task 4 passes**
@@ -1348,7 +1329,7 @@ def _memory_file(
 Run:
 
 ```powershell
-py -3.11 -m pytest tests/memory/test_extraction_eval.py -v
+py -3.11 -m pytest XxCode/tests/memory/test_extraction_eval.py -v
 ```
 
 Expected: PASS with 19 tests.
@@ -1358,8 +1339,8 @@ Expected: PASS with 19 tests.
 Run:
 
 ```bash
-git add tests/memory/helpers/extraction_eval.py tests/memory/test_extraction_eval.py
-git commit -m "Report deterministic memory extraction quality scorecards"
+git -C XxCode add tests/memory/helpers/extraction_eval.py tests/memory/test_extraction_eval.py
+git -C XxCode commit -m "Report deterministic memory extraction quality scorecards"
 ```
 
 ## Task 5: Final Verification
@@ -1374,7 +1355,7 @@ git commit -m "Report deterministic memory extraction quality scorecards"
 Run:
 
 ```powershell
-py -3.11 -m pytest tests/memory/test_extraction.py tests/memory/test_extraction_prompt.py tests/memory/test_extraction_eval.py tests/memory/test_index_eval.py tests/memory/test_recall_eval.py tests/memory/test_recall_stability.py -v
+py -3.11 -m pytest XxCode/tests/memory/test_extraction.py XxCode/tests/memory/test_extraction_prompt.py XxCode/tests/memory/test_extraction_eval.py XxCode/tests/memory/test_index_eval.py XxCode/tests/memory/test_recall_eval.py XxCode/tests/memory/test_recall_stability.py -v
 ```
 
 Expected: PASS.
@@ -1384,7 +1365,7 @@ Expected: PASS.
 Run:
 
 ```powershell
-py -3.11 -m pytest tests/memory -v
+py -3.11 -m pytest XxCode/tests/memory -v
 ```
 
 Expected: PASS.
@@ -1394,7 +1375,7 @@ Expected: PASS.
 Run:
 
 ```powershell
-py -3.11 -m pytest tests/context -v
+py -3.11 -m pytest XxCode/tests/context -v
 ```
 
 Expected: PASS.
@@ -1404,7 +1385,7 @@ Expected: PASS.
 Run:
 
 ```powershell
-git diff -- tests/memory/helpers/extraction_eval.py tests/memory/test_extraction_eval.py
+git -C XxCode diff -- tests/memory/helpers/extraction_eval.py tests/memory/test_extraction_eval.py
 ```
 
 Expected: no output if all implementation tasks were committed separately. If output exists, inspect it and either commit task-specific changes or fix unintended edits.
@@ -1414,7 +1395,7 @@ Expected: no output if all implementation tasks were committed separately. If ou
 Run:
 
 ```powershell
-git status --short -- tests/memory/helpers/extraction_eval.py tests/memory/test_extraction_eval.py
+git -C XxCode status --short -- tests/memory/helpers/extraction_eval.py tests/memory/test_extraction_eval.py
 ```
 
 Expected: no output if all implementation tasks were committed separately.
@@ -1424,6 +1405,6 @@ Expected: no output if all implementation tasks were committed separately.
 If implementation changes were intentionally batched and are still unstaged, run:
 
 ```bash
-git add tests/memory/helpers/extraction_eval.py tests/memory/test_extraction_eval.py
-git commit -m "Add deterministic memory extraction quality evaluation suite"
+git -C XxCode add tests/memory/helpers/extraction_eval.py tests/memory/test_extraction_eval.py
+git -C XxCode commit -m "Add deterministic memory extraction quality evaluation suite"
 ```
