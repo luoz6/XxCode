@@ -383,3 +383,128 @@ def _memory_file(memory_type: str, body: str) -> str:
         "---\n\n"
         f"{body}\n"
     )
+
+
+@dataclass(frozen=True)
+class StabilityMetrics:
+    case_id: str
+    repeat_run_count: int
+    repeat_consistency: float
+    order_stability: float
+    noise_resistance: float
+    description_robustness: float
+    baseline_filenames: list[str]
+
+
+@dataclass(frozen=True)
+class StabilityScorecard:
+    n_cases: int
+    repeat_consistency_rate: float
+    order_stability_rate: float
+    noise_resistance_rate: float
+    description_robustness_rate: float
+
+
+async def compute_stability_metrics(
+    case: RecallEvalCase,
+    base_dir: Path,
+) -> StabilityMetrics:
+    first = await run_recall_case(case, base_dir / "repeat-1")
+    second = await run_recall_case(case, base_dir / "repeat-2")
+    reordered = await run_recall_case(_with_reordered_index(case), base_dir / "order")
+    noisy = await run_recall_case(_with_irrelevant_noise(case), base_dir / "noise")
+    rewritten = await run_recall_case(
+        _with_rewritten_non_target_descriptions(case),
+        base_dir / "description",
+    )
+
+    baseline_set = set(first)
+    return StabilityMetrics(
+        case_id=case.case_id,
+        repeat_run_count=2,
+        repeat_consistency=1.0 if first == second else 0.0,
+        order_stability=1.0 if baseline_set == set(reordered) else 0.0,
+        noise_resistance=1.0 if baseline_set.issubset(set(noisy)) else 0.0,
+        description_robustness=1.0 if baseline_set == set(rewritten) else 0.0,
+        baseline_filenames=first,
+    )
+
+
+def build_stability_scorecard(
+    metrics: list[StabilityMetrics],
+) -> StabilityScorecard:
+    if not metrics:
+        return StabilityScorecard(
+            n_cases=0,
+            repeat_consistency_rate=0.0,
+            order_stability_rate=0.0,
+            noise_resistance_rate=0.0,
+            description_robustness_rate=0.0,
+        )
+
+    n_cases = len(metrics)
+    return StabilityScorecard(
+        n_cases=n_cases,
+        repeat_consistency_rate=sum(m.repeat_consistency for m in metrics) / n_cases,
+        order_stability_rate=sum(m.order_stability for m in metrics) / n_cases,
+        noise_resistance_rate=sum(m.noise_resistance for m in metrics) / n_cases,
+        description_robustness_rate=(
+            sum(m.description_robustness for m in metrics) / n_cases
+        ),
+    )
+
+
+def _with_reordered_index(case: RecallEvalCase) -> RecallEvalCase:
+    lines = [line for line in case.index_content.splitlines() if line.strip()]
+    return RecallEvalCase(
+        case_id=f"{case.case_id}:reordered",
+        query=case.query,
+        index_content="\n".join(reversed(lines)) + "\n",
+        memory_files=dict(case.memory_files),
+        expected_filenames=set(case.expected_filenames),
+        expected_top1=case.expected_top1,
+    )
+
+
+def _with_irrelevant_noise(case: RecallEvalCase) -> RecallEvalCase:
+    memory_files = dict(case.memory_files)
+    memory_files.update({
+        "noise-calendar.md": _memory_file("reference", "Calendar archive"),
+        "noise-packaging.md": _memory_file("reference", "Packaging archive"),
+        "noise-navigation.md": _memory_file("reference", "Navigation archive"),
+    })
+    noise_index = (
+        "- [Noise Calendar](noise-calendar.md) - Calendar archive\n"
+        "- [Noise Packaging](noise-packaging.md) - Packaging archive\n"
+        "- [Noise Navigation](noise-navigation.md) - Navigation archive\n"
+    )
+    return RecallEvalCase(
+        case_id=f"{case.case_id}:noise",
+        query=case.query,
+        index_content=case.index_content.rstrip() + "\n" + noise_index,
+        memory_files=memory_files,
+        expected_filenames=set(case.expected_filenames),
+        expected_top1=case.expected_top1,
+    )
+
+
+def _with_rewritten_non_target_descriptions(case: RecallEvalCase) -> RecallEvalCase:
+    rewritten_lines: list[str] = []
+    for entry in parse_memory_index(case.index_content):
+        if entry.filename in case.expected_filenames:
+            rewritten_lines.append(
+                f"- [{entry.title}]({entry.filename}) - {entry.description}"
+            )
+        else:
+            rewritten_lines.append(
+                f"- [{entry.title}]({entry.filename}) - Neutral unrelated archive note"
+            )
+
+    return RecallEvalCase(
+        case_id=f"{case.case_id}:description",
+        query=case.query,
+        index_content="\n".join(rewritten_lines) + "\n",
+        memory_files=dict(case.memory_files),
+        expected_filenames=set(case.expected_filenames),
+        expected_top1=case.expected_top1,
+    )
