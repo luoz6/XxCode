@@ -25,7 +25,7 @@ The suite should produce concrete numbers for:
 - memory usage in final answers
 - preference adherence
 - stale or obsolete memory avoidance
-- answer grounding in recalled memory
+- memory-fact sourcing in final answers
 - memory-enabled answer lift over a no-memory baseline
 
 ## 2. Current State
@@ -156,7 +156,6 @@ Each benchmark case should define:
 - `query: str`
 - `recalled_memories: dict[str, str]`
 - `answer: str | None`
-- `answer_claims: set[str] | None`
 - `baseline_answer: str | None`
 - `expected_answer_facts: set[str]`
 - `expected_memory_facts_used: set[str]`
@@ -171,8 +170,6 @@ Field meanings:
   deterministic assistant; version 0.1 treats this as already recalled input
 - `answer`: optional pre-written answer to score directly; when this is not
   `None`, the evaluator must not call the deterministic assistant
-- `answer_claims`: optional explicit claims present in `answer`; retained for
-  future grounding analysis but not scored in version 0.1
 - `baseline_answer`: optional no-memory answer used for memory-lift comparison
 - `expected_answer_facts`: facts that should appear in the final answer
 - `expected_memory_facts_used`: subset of facts that must be supported by
@@ -244,8 +241,7 @@ rules:
 1. tokenize query and memory text with `[a-z0-9]+`
 2. select recalled memory facts whose tokens overlap with the query
 3. include selected memory facts in a stable answer template
-4. optionally apply preference phrases when the case expects preference use
-5. break ties deterministically by filename
+4. break ties deterministically by filename
 
 The deterministic assistant should not be responsible for generating bad or
 risk outputs. Risk outputs are provided through the case `answer` field and
@@ -319,6 +315,11 @@ Definitions:
   than `baseline_answer`, otherwise `0.0`
 - `memory_lift_delta = answer_fact_coverage - baseline_answer_fact_coverage`
 
+`baseline_answer_fact_coverage` is computed with the same lexical rule as
+`answer_fact_coverage`, but against `baseline_answer` text:
+
+- `baseline_answer_fact_coverage = represented expected_answer_facts in baseline_answer / expected_answer_facts`
+
 ### 10.3 Optional Metric Behavior
 
 Some metrics have no denominator for some cases. Version 0.1 should use `None`
@@ -345,10 +346,6 @@ why no positive answer fact is expected, such as `noise-only` or
 Version 0.1 does not compute a separate `grounding_rate`. The earlier
 grounding-like requirement is represented by `memory_fact_usage_rate` and by
 forbidden/obsolete fact absence metrics.
-
-`answer_claims` is included in the case shape only as a future extension point
-for live or semantic answer evaluation. It should not affect version 0.1
-scorecards.
 
 ## 11. Aggregate Reporting
 
@@ -446,6 +443,9 @@ Required validation:
 
 - every `expected_memory_facts_used` fact must be present in at least one
   recalled memory snippet
+- no `expected_memory_facts_used` fact may have a token set that is a subset of
+  the query token set; this ensures memory usage measures information sourced
+  from memory, not facts already present in the query
 - every `expected_preferences_applied` fact must also be present in
   `expected_answer_facts`
 - `forbidden_answer_facts` must not overlap `expected_answer_facts`
@@ -518,6 +518,7 @@ Later versions may add:
 - live LLM final-answer evaluation
 - model-judge or rubric-based semantic scoring
 - multi-session memory update and query scenarios
+- explicit `answer_claims` fields and claim-grounding metrics
 - order-aware answer metrics
 - paraphrase-aware fact matching
 - optional A/B benchmark scripts outside CI
