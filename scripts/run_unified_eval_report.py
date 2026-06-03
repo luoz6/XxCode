@@ -82,3 +82,20 @@ async def run_report(output_dir: Path, work_dir: Path, keep: int) -> int:
     except Exception as exc:
         print(f"unified eval report failed: {exc}", file=sys.stderr)
         return 2
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    output_dir = (REPO_ROOT / args.output_dir).resolve()
+    work_dir = (REPO_ROOT / args.work_dir).resolve()
+    return asyncio.run(
+        run_report(
+            output_dir=output_dir,
+            work_dir=work_dir,
+            keep=args.keep,
+        )
+    )
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

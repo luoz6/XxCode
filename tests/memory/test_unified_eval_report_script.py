@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import os
+import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -147,3 +150,49 @@ async def test_run_report_returns_two_on_unexpected_runtime_failure(
 
     assert exit_code == 2
     assert "boom" in captured.err
+
+
+def test_main_resolves_relative_paths_and_returns_asyncio_result(monkeypatch):
+    script = _load_script_module()
+
+    async def _fake_run_report(output_dir: Path, work_dir: Path, keep: int) -> int:
+        assert output_dir == script.REPO_ROOT / "docs" / "reports"
+        assert work_dir == script.REPO_ROOT / ".tmp" / "unified-eval-run"
+        assert keep == 4
+        return 0
+
+    monkeypatch.setattr(script, "run_report", _fake_run_report)
+
+    assert script.main([]) == 0
+
+
+def test_script_runs_as_standalone_process_and_writes_report(tmp_path):
+    output_dir = tmp_path / "reports"
+    work_dir = tmp_path / "work"
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--output-dir",
+            str(output_dir),
+            "--work-dir",
+            str(work_dir),
+            "--keep",
+            "4",
+        ],
+        cwd=SCRIPT_PATH.parents[1],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        check=False,
+    )
+
+    written_files = list(output_dir.glob("unified-eval-report-*.txt"))
+
+    assert result.returncode == 0
+    assert "统一评测报告 通过=True 失败项=0" in result.stdout
+    assert len(written_files) == 1
