@@ -230,6 +230,14 @@ This is explicit because extraction can create, update, or delete files:
 Version 0.1 should not infer edits from tool traces. It should compare the two
 file maps directly.
 
+The operation classification is consumed by version 0.1 metrics and validation:
+
+- `created_filenames` is used by `duplicate_control_rate` to check that
+  duplicate facts were not written into newly created files
+- `updated_filenames` is used to validate `expected_updated_filenames`
+- `deleted_filenames` is used to validate `expected_deleted_filenames`
+- `no_op_filenames` is diagnostic only in version 0.1
+
 ## 9. Metric Contract
 
 ### 9.1 Validity Metrics
@@ -364,7 +372,8 @@ Definitions:
 
 Version 0.1 uses curated case metadata to identify duplicate and conflict
 expectations. `duplicate_facts` defines facts that are already present before
-extraction and should not appear in newly created files. `expected_latest_facts`
+extraction and should not appear in files classified as `created_filenames`.
+`expected_latest_facts`
 and `obsolete_facts` define the conflict/update expectation. An obsolete fact is
 considered retained if the lexical fact matcher finds it in any candidate
 memory's `name`, `description`, or `content`; it does not require the old slug
@@ -381,6 +390,11 @@ conflict rate.
 ## 10. Aggregate Reporting
 
 Version 0.1 should expose a scorecard, not a single blended score.
+
+Each `mean_*` field excludes cases where the corresponding per-case metric is
+`None`. The companion `n_*` field reports the denominator for optional metric
+families, such as type accuracy, noise suppression, duplicate control, and
+conflict correctness.
 
 Recommended scorecard fields:
 
@@ -525,6 +539,16 @@ Invalid case definitions should fail before metric computation when:
   `existing_memory_files`
 - `expected_deleted_filenames` references a filename not present in
   `existing_memory_files`
+
+Candidate output expectation failures should be reported as evaluation failures,
+not invalid case definitions, when:
+
+- `expected_updated_filenames` references a filename that is not classified as
+  `updated_filenames`
+- `expected_deleted_filenames` references a filename that is not classified as
+  `deleted_filenames`
+- `expected_deleted_filenames` references a filename still present in
+  `candidate_memory_files`
 
 Malformed candidate memory files are not invalid case definitions. They are
 valid risk inputs and should reduce `write_validity_rate`.
