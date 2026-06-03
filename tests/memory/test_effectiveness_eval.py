@@ -99,3 +99,69 @@ def test_compute_metrics_scores_answer_facts_memory_usage_and_absence():
     assert metrics.used_memory_facts == {"use snake_case"}
     assert metrics.leaked_forbidden_facts == set()
     assert metrics.leaked_obsolete_facts == set()
+
+
+def test_prewritten_answer_mode_does_not_use_deterministic_assistant():
+    case = EffectivenessEvalCase(
+        case_id="prewritten-risk",
+        query="How should I write tests?",
+        recalled_memories={
+            "style.md": "Use snake_case in Python tests.",
+        },
+        answer="Use camelCase in Python tests.",
+        expected_answer_facts={"use snake_case"},
+        expected_memory_facts_used={"use snake_case"},
+        expected_preferences_applied={"use snake_case"},
+        # This intentionally uses v0.1 token-subset matching. Token order and
+        # phrase boundaries are not semantic in this first implementation.
+        obsolete_facts={"camelCase tests"},
+    )
+
+    metrics = compute_effectiveness_metrics(case)
+
+    assert metrics.answer == "Use camelCase in Python tests."
+    assert metrics.answer_fact_coverage == 0.0
+    assert metrics.memory_fact_usage_rate == 0.0
+    assert metrics.preference_adherence_rate == 0.0
+    assert metrics.obsolete_fact_suppression_rate == 0.0
+    assert metrics.leaked_obsolete_facts == {"camelCase tests"}
+
+
+def test_generated_answer_mode_uses_query_relevant_memory():
+    case = EffectivenessEvalCase(
+        case_id="generated-answer",
+        query="How should I write Python tests?",
+        recalled_memories={
+            "style.md": "User prefers snake_case in Python tests.",
+            "docs.md": "Project docs live in the handbook.",
+        },
+        expected_answer_facts={"user prefers snake_case", "python tests"},
+        expected_memory_facts_used={"user prefers snake_case"},
+        expected_preferences_applied={"user prefers snake_case"},
+    )
+
+    metrics = compute_effectiveness_metrics(case)
+
+    assert "User prefers snake_case in Python tests." in metrics.answer
+    assert "Project docs live in the handbook." not in metrics.answer
+    assert metrics.answer_fact_coverage == 1.0
+    assert metrics.memory_fact_usage_rate == 1.0
+
+
+def test_memory_lift_reports_binary_pass_and_delta():
+    case = EffectivenessEvalCase(
+        case_id="lift",
+        query="How should I write tests?",
+        recalled_memories={
+            "style.md": "User prefers snake_case in Python tests.",
+        },
+        baseline_answer="Write clear tests.",
+        expected_answer_facts={"user prefers snake_case", "python tests"},
+        expected_memory_facts_used={"user prefers snake_case"},
+        expected_preferences_applied={"user prefers snake_case"},
+    )
+
+    metrics = compute_effectiveness_metrics(case)
+
+    assert metrics.memory_lift == 1.0
+    assert metrics.memory_lift_delta == 1.0

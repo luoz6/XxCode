@@ -182,8 +182,20 @@ def _select_answer(case: EffectivenessEvalCase) -> str:
 
 
 def _deterministic_assistant(query: str, recalled_memories: dict[str, str]) -> str:
-    del recalled_memories
-    return query
+    query_tokens = _tokens(query)
+    ranked: list[tuple[int, str, str]] = []
+    for filename, memory_text in recalled_memories.items():
+        memory_tokens = _tokens(memory_text)
+        # Phase one uses single-token lexical overlap. False positives from
+        # common words are a known limitation controlled by the curated corpus.
+        score = len(query_tokens & memory_tokens)
+        if score > 0:
+            ranked.append((-score, filename, memory_text.strip()))
+    ranked.sort(key=lambda item: (item[0], item[1]))
+    selected = [memory_text for _score, _filename, memory_text in ranked]
+    if not selected:
+        return f"Answer based on the query: {query}"
+    return " ".join(selected)
 
 
 def _coverage(facts: set[str], text: str) -> float:
