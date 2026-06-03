@@ -486,16 +486,16 @@ Replace the L4 section in `src/xxcode/context/pipeline.py` with:
 
 ```python
         post_l3_tokens = stats.tokens_after
-        snip_tokens_freed = stats.snip_removed // 4
+        l1_char_tokens_freed = stats.snip_removed // 4
         if not should_autocompact(
             current_tokens=stats.tokens_after,
-            snip_tokens_freed=snip_tokens_freed,
+            snip_tokens_freed=l1_char_tokens_freed,
             context_limit=context_limit,
             consecutive_failures=failure_count,
         ):
             logger.debug(
                 "L4 suppressed: tokens_after=%d, snip_freed=%d, consecutive_failures=%d",
-                stats.tokens_after, snip_tokens_freed, failure_count,
+                stats.tokens_after, l1_char_tokens_freed, failure_count,
             )
             stats.auto_tokens_freed = 0
             stats.tokens_after = token_count_with_estimation(current)
@@ -625,6 +625,7 @@ async def test_l4_failure_still_marks_attempt_but_no_token_gain(tmp_path, monkey
 ```
 
 - [ ] **Step 2: Run the L4 suppression and failure tests to verify they fail**
+- [ ] **Step 2: Run the L4 suppression and failure tests to verify the Task 4 code already satisfies them**
 
 Run:
 
@@ -632,22 +633,25 @@ Run:
 py -3.11 -m pytest tests/context/test_compression_contributions.py::test_l4_suppressed_keeps_zero_auto_contribution tests/context/test_compression_contributions.py::test_l4_failure_still_marks_attempt_but_no_token_gain -v
 ```
 
-Expected: FAIL because the suppression and failure semantics are not yet asserted explicitly.
+Expected: PASS because Task 4 already gives the correct suppression and failed-attempt behavior; this step confirms the semantics before deciding whether any readability-only cleanup is still needed.
 
-- [ ] **Step 3: Make the L4 zero-contribution semantics explicit**
+- [ ] **Step 3: If needed, make the L4 zero-contribution semantics more explicit**
 
-Adjust `src/xxcode/context/pipeline.py` so the attempted/suppressed semantics are obvious in code:
+If Step 2 already passes and the code is readable enough, skip the edit and go
+directly to Step 4. If the code still feels ambiguous, adjust
+`src/xxcode/context/pipeline.py` so the attempted/suppressed semantics are
+obvious in code:
 
 ```python
         if not should_autocompact(
             current_tokens=stats.tokens_after,
-            snip_tokens_freed=snip_tokens_freed,
+            snip_tokens_freed=l1_char_tokens_freed,
             context_limit=context_limit,
             consecutive_failures=failure_count,
         ):
             logger.debug(
                 "L4 suppressed: tokens_after=%d, snip_freed=%d, consecutive_failures=%d",
-                stats.tokens_after, snip_tokens_freed, failure_count,
+                stats.tokens_after, l1_char_tokens_freed, failure_count,
             )
             stats.auto_triggered = False
             stats.auto_tokens_freed = 0
@@ -780,7 +784,9 @@ relationships:
 
 Do not collapse these variables back into anonymous inline expressions. If an
 earlier task drifted from this layout, make the smallest code edit needed to
-restore these explicit stage boundaries before rerunning the regression.
+restore these explicit stage boundaries before rerunning the regression. If the
+verification already passes exactly as-is, skip the code edit and proceed
+directly to Step 4.
 
 - [ ] **Step 4: Run the end-to-end regression to verify it passes**
 
