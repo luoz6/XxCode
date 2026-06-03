@@ -213,3 +213,65 @@ async def test_l4_success_reports_budget_and_token_delta(tmp_path, monkeypatch):
     assert stats.auto_tokens_freed > 0
     assert any("[Conversation summary]" in text for text in summary_texts)
     assert state.task_budget_remaining == 50_000 - seen["post_l3_tokens"]
+
+
+@pytest.mark.asyncio
+async def test_l4_suppressed_keeps_zero_auto_contribution(tmp_path, monkeypatch):
+    pipeline = _make_pipeline(tmp_path)
+    messages: list[dict] = []
+    for turn_id in range(12):
+        messages.extend(_exchange(turn_id, text_size=1200))
+
+    monkeypatch.setattr(pipeline_module, "should_autocompact", lambda **kwargs: False)
+
+    compressed, stats = await pipeline.compress(
+        messages,
+        current_tokens=None,
+        context_limit=1000,
+        threshold=0.1,
+    )
+
+    summary_texts = [
+        block["text"]
+        for msg in compressed
+        for block in msg.get("content", [])
+        if block.get("type") == "text"
+    ]
+
+    assert stats.auto_triggered is False
+    assert stats.auto_tokens_freed == 0
+    assert all("[Conversation summary]" not in text for text in summary_texts)
+
+
+@pytest.mark.asyncio
+async def test_l4_failure_still_marks_attempt_but_no_token_gain(tmp_path, monkeypatch):
+    pipeline = _make_pipeline(tmp_path)
+    messages: list[dict] = []
+    for turn_id in range(12):
+        messages.extend(_exchange(turn_id, text_size=1200))
+
+    async def _fail_autocompact(self, current, system_prompt):
+        raise RuntimeError("summarizer down")
+
+    monkeypatch.setattr(ContextPipeline, "_autocompact", _fail_autocompact)
+
+    state = AgentState(system_prompt="system")
+    compressed, stats = await pipeline.compress(
+        messages,
+        current_tokens=None,
+        context_limit=1000,
+        threshold=0.1,
+        state=state,
+    )
+
+    summary_texts = [
+        block["text"]
+        for msg in compressed
+        for block in msg.get("content", [])
+        if block.get("type") == "text"
+    ]
+
+    assert stats.auto_triggered is True
+    assert stats.auto_tokens_freed == 0
+    assert all("[Conversation summary]" not in text for text in summary_texts)
+    assert state.consecutive_autocompact_failures == 1
