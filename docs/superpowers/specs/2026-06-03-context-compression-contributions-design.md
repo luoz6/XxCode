@@ -101,8 +101,8 @@ Secondary fields remain useful and should be preserved or clarified:
   replaced with the L2 placeholder
 - `micro_truncated`: a legacy or diagnostic field only if still needed, but it
   should not be the exactness target of contribution tests
-- `collapse_count`: number of messages or exchanges removed by L3, but its
-  exact meaning must be made explicit in code and tests
+- `collapse_count`: net message reduction produced by `collapse_messages()`,
+  not "collapsed exchange count"
 - `auto_triggered`: whether L4 ran
 
 ### 6.3 Consistency Rule
@@ -114,22 +114,28 @@ The tests should enforce a simple consistency rule:
 - when a layer materially changes the message list, its token contribution is
   expected to be positive
 - when the fixture produces a positive overall reduction, the per-level token
-  contributions should approximately add up to the total reduction within a
-  10% tolerance
+  contributions should add up exactly to the total reduction because the
+  definitions telescope across shared intermediate estimates
 
 For fixtures with positive total reduction:
 
-`abs((sum(per_level_tokens_freed) - (tokens_before - tokens_after)) / (tokens_before - tokens_after)) <= 0.10`
+`sum(per_level_tokens_freed) == (tokens_before - tokens_after)`
 
 For no-op or identity fixtures:
 
 - `tokens_before == tokens_after`
 - every per-level token contribution in scope is exactly `0`
 
-If the test suite cannot satisfy this tolerance on deterministic fixtures, the
-design must treat that as evidence that the estimation strategy is too noisy for
-precise contribution accounting, and the limitation must be explained rather
-than silently tolerated.
+This equality is expected to hold because adjacent contribution terms share the
+same intermediate `token_count_with_estimation()` outputs:
+
+- `snip_tokens_freed = tokens_before - post_L1_estimate`
+- `micro_tokens_freed = post_L1_estimate - post_L2_estimate`
+- `collapse_tokens_freed = post_L2_estimate - post_L3_estimate`
+- `auto_tokens_freed = post_L3_estimate - tokens_after`
+
+The intermediate terms cancel exactly, so the sum should equal
+`tokens_before - tokens_after` rather than merely approximate it.
 
 ### 6.4 L1 Measurement Contract
 
@@ -175,6 +181,13 @@ L4 tests should verify:
 - the injected summary message appears in the compressed result
 - budget carryover still deducts the pre-compact waterline when
   `state.task_budget_remaining` is explicitly initialized
+
+L4 suppression tests should also verify:
+
+- when `should_autocompact(...)` returns `False`, `auto_triggered` remains
+  `False`
+- `auto_tokens_freed == 0`
+- the pipeline returns the post-L3 message list unchanged
 
 ## 8. Test Design
 
@@ -255,9 +268,15 @@ Token estimation strategy:
 Assertions:
 
 - `collapse_tokens_freed > 0`
-- `collapse_count > 0`
+- `collapse_count` is asserted as the net message reduction from the
+  `collapse_messages()` replacement behavior
 - a collapsed summary message appears
 - recent exchanges are still preserved
+
+For example, if the older portion contributes `60` messages and is replaced by
+`1` collapsed summary message, the exact expectation is:
+
+- `collapse_count == 59`
 
 ### 8.4 L4 Autocompact Scenario
 
@@ -274,6 +293,13 @@ Budget setup precondition:
 
 - create an `AgentState`
 - set `state.task_budget_remaining = 50_000`
+- ensure the fixture still has more than `4` messages after L1-L3 so
+  `_inject_summary(..., keep_recent=2)` actually inserts the summary message
+
+L4 entry accounting precondition:
+
+- capture the post-L3 token waterline immediately before `_autocompact()`
+- use that captured value as the expected budget deduction baseline
 
 Assertions:
 
@@ -281,10 +307,17 @@ Assertions:
 - `auto_tokens_freed > 0`
 - the result includes `[Conversation summary]`
 - the old message history is replaced per the L4 contract
-- `state.task_budget_remaining == 50_000 - tokens_before`
+- `state.task_budget_remaining == 50_000 - post_L3_token_count`
 
 If a test intentionally omits `task_budget_remaining`, it should explicitly
 state that budget-carryover assertions are out of scope for that fixture.
+
+Also add a suppression subcase:
+
+- monkeypatch or otherwise force `should_autocompact(...)` to return `False`
+- assert `auto_triggered is False`
+- assert `auto_tokens_freed == 0`
+- assert no summary message is injected
 
 ### 8.5 End-to-End Contribution Scenario
 
@@ -300,8 +333,7 @@ Assertions:
 
 - `tokens_before > tokens_after`
 - at least two per-level contribution fields are positive
-- the summed per-level token contributions stay within the 10% tolerance of the
-  total token reduction
+- the summed per-level token contributions equal the total token reduction
 - the combined result is smaller and structurally valid
 
 ## 9. TDD Execution Order
@@ -381,11 +413,12 @@ This design is complete when:
    contributions
 2. tests cover L1 through L4 deterministically
 3. total `tokens_before` and `tokens_after` reductions are validated
-4. the summed per-level token contributions stay within the agreed 10%
-   tolerance on positive-reduction fixtures
+4. the summed per-level token contributions equal the total token reduction on
+   positive-reduction fixtures
 5. L2 exact block clearing is verified through `micro_cleared`
-6. L4 coverage requires no live API dependency
-7. the new tests are written and implemented in TDD order
+6. L4 success and suppression paths both define `auto_tokens_freed`
+7. L4 coverage requires no live API dependency
+8. the new tests are written and implemented in TDD order
 
 ## 12. Spec Self-Review
 
@@ -398,5 +431,6 @@ Checklist results:
 - Scope check: this spec stays focused on runtime message compression
   contribution testing.
 - Ambiguity check: the spec now distinguishes token and character accounting,
-  separates pipeline L1 from the unused L1 variant, and explicitly states L4
-  budget preconditions.
+  separates pipeline L1 from the unused L1 variant, defines `collapse_count` as
+  net message reduction, and explicitly states L4 entry and budget
+  preconditions.
