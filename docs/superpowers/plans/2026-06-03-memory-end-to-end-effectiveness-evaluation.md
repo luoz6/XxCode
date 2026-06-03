@@ -69,6 +69,22 @@ def test_validate_case_rejects_memory_fact_already_in_query():
         compute_effectiveness_metrics(case)
 
 
+def test_validate_case_rejects_memory_fact_missing_from_recalled_memory():
+    case = EffectivenessEvalCase(
+        case_id="memory-fact-missing",
+        query="How should I write tests?",
+        recalled_memories={
+            "style.md": "User prefers concise answers.",
+        },
+        answer="Use snake_case for tests.",
+        expected_answer_facts={"use snake_case"},
+        expected_memory_facts_used={"use snake_case"},
+    )
+
+    with pytest.raises(ValueError, match="missing from recalled_memories"):
+        compute_effectiveness_metrics(case)
+
+
 def test_validate_case_rejects_preference_not_in_expected_answer_facts():
     case = EffectivenessEvalCase(
         case_id="preference-not-answer-fact",
@@ -339,6 +355,28 @@ def _safe_div(numerator: int, denominator: int, empty_value: float) -> float:
 
 def _tokens(text: str) -> set[str]:
     return set(_TOKEN_RE.findall(text.lower()))
+
+
+def _content_tokens(text: str) -> set[str]:
+    stopwords = {
+        "a",
+        "an",
+        "and",
+        "before",
+        "for",
+        "how",
+        "in",
+        "of",
+        "should",
+        "the",
+        "to",
+        "what",
+    }
+    return {
+        token
+        for token in _tokens(text)
+        if len(token) >= 3 and token not in stopwords
+    }
 ```
 
 - [ ] **Step 4: Run Task 1 tests to verify they pass**
@@ -349,7 +387,7 @@ Run:
 py -3.11 -m pytest XxCode/tests/memory/test_effectiveness_eval.py -v
 ```
 
-Expected: PASS with 4 tests.
+Expected: PASS with 5 tests.
 
 - [ ] **Step 5: Commit Task 1**
 
@@ -382,6 +420,8 @@ def test_prewritten_answer_mode_does_not_use_deterministic_assistant():
         expected_answer_facts={"use snake_case"},
         expected_memory_facts_used={"use snake_case"},
         expected_preferences_applied={"use snake_case"},
+        # This intentionally uses v0.1 token-subset matching. Token order and
+        # phrase boundaries are not semantic in this first implementation.
         obsolete_facts={"camelCase tests"},
     )
 
@@ -451,10 +491,12 @@ Replace `_deterministic_assistant(...)` in `XxCode/tests/memory/helpers/effectiv
 
 ```python
 def _deterministic_assistant(query: str, recalled_memories: dict[str, str]) -> str:
-    query_tokens = _tokens(query)
+    query_tokens = _content_tokens(query)
     ranked: list[tuple[int, str, str]] = []
     for filename, memory_text in recalled_memories.items():
-        memory_tokens = _tokens(memory_text)
+        memory_tokens = _content_tokens(memory_text)
+        # Phase one uses lexical overlap only. Stopwords and very short tokens
+        # are filtered so unrelated memories do not match on words like "in".
         score = len(query_tokens & memory_tokens)
         if score > 0:
             ranked.append((-score, filename, memory_text.strip()))
@@ -473,7 +515,7 @@ Run:
 py -3.11 -m pytest XxCode/tests/memory/test_effectiveness_eval.py -v
 ```
 
-Expected: PASS with 7 tests.
+Expected: PASS with 8 tests.
 
 - [ ] **Step 5: Commit Task 2**
 
@@ -630,6 +672,16 @@ def effectiveness_benchmark_cases() -> list[EffectivenessEvalCase]:
             expected_preferences_applied={"user prefers snake_case"},
         ),
         EffectivenessEvalCase(
+            case_id="project-lift",
+            query="What should I do before completion?",
+            recalled_memories={
+                "project-rule.md": "Always run pytest before completion.",
+            },
+            baseline_answer="Review your work before completion.",
+            expected_answer_facts={"run pytest", "before completion"},
+            expected_memory_facts_used={"run pytest"},
+        ),
+        EffectivenessEvalCase(
             case_id="generic-answer-risk",
             query="How should I write tests?",
             recalled_memories={
@@ -747,7 +799,7 @@ Run:
 py -3.11 -m pytest XxCode/tests/memory/test_effectiveness_eval.py -v
 ```
 
-Expected: PASS with 10 tests.
+Expected: PASS with 11 tests.
 
 - [ ] **Step 5: Commit Task 3**
 
