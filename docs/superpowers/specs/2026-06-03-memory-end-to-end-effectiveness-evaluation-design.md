@@ -155,6 +155,8 @@ Each benchmark case should define:
 - `case_id: str`
 - `query: str`
 - `recalled_memories: dict[str, str]`
+- `answer: str | None`
+- `answer_claims: set[str] | None`
 - `baseline_answer: str | None`
 - `expected_answer_facts: set[str]`
 - `expected_memory_facts_used: set[str]`
@@ -167,6 +169,10 @@ Field meanings:
 
 - `recalled_memories`: mapping of `filename -> memory text` available to the
   deterministic assistant; version 0.1 treats this as already recalled input
+- `answer`: optional pre-written answer to score directly; when this is not
+  `None`, the evaluator must not call the deterministic assistant
+- `answer_claims`: optional explicit claims present in `answer`; retained for
+  future grounding analysis but not scored in version 0.1
 - `baseline_answer`: optional no-memory answer used for memory-lift comparison
 - `expected_answer_facts`: facts that should appear in the final answer
 - `expected_memory_facts_used`: subset of facts that must be supported by
@@ -196,6 +202,28 @@ Version 0.1 should include at least these categories:
 The suite should be small and curated. The purpose is clear diagnostic signal,
 not broad benchmark scale.
 
+### 8.4 Generated-Answer And Prewritten-Answer Modes
+
+Version 0.1 has two explicit case modes:
+
+1. generated-answer mode: `answer is None`, so the deterministic assistant
+   generates the answer from `query` and `recalled_memories`
+2. prewritten-answer mode: `answer` is a non-empty string, so the evaluator
+   scores that answer directly and does not call the deterministic assistant
+
+Healthy cases should usually use generated-answer mode. Risk cases should
+usually use prewritten-answer mode so they can simulate failures the
+deterministic assistant should not naturally produce, such as:
+
+- ignoring available memory
+- using an obsolete fact
+- introducing an ungrounded fact
+- producing a generic answer when memory should make the answer specific
+
+This separation keeps generation and detection decoupled. The deterministic
+assistant is responsible for healthy deterministic behavior; prewritten answers
+are responsible for evaluator risk coverage.
+
 ## 9. Deterministic Assistant Contract
 
 ### 9.1 Input
@@ -219,10 +247,28 @@ rules:
 4. optionally apply preference phrases when the case expects preference use
 5. break ties deterministically by filename
 
-The deterministic assistant may also support explicitly bad/risk outputs for
-risk cases, but those should be case-controlled rather than hidden randomness.
+The deterministic assistant should not be responsible for generating bad or
+risk outputs. Risk outputs are provided through the case `answer` field and
+scored directly.
 
-### 9.3 Why Not A Live LLM
+### 9.3 Answer Selection Policy
+
+For every case, the evaluator selects the answer with this rule:
+
+```python
+if case.answer is not None:
+    answer = case.answer
+else:
+    answer = deterministic_assistant(case.query, case.recalled_memories)
+```
+
+This makes the two test purposes explicit:
+
+- generated-answer cases verify that a deterministic answer path can use
+  correct memory
+- prewritten-answer cases verify that the evaluator detects known failure modes
+
+### 9.4 Why Not A Live LLM
 
 Live LLM output would make first-version CI noisy and would blur failure
 diagnosis. A bad score could mean:
@@ -259,8 +305,8 @@ Each case should report:
 - `preference_adherence_rate`
 - `forbidden_fact_absence_rate`
 - `obsolete_fact_suppression_rate`
-- `grounding_rate`
 - `memory_lift`
+- `memory_lift_delta`
 
 Definitions:
 
@@ -269,9 +315,9 @@ Definitions:
 - `preference_adherence_rate = represented expected_preferences_applied / expected_preferences_applied`
 - `forbidden_fact_absence_rate = forbidden facts absent from answer / forbidden_answer_facts`
 - `obsolete_fact_suppression_rate = obsolete facts absent from answer / obsolete_facts`
-- `grounding_rate = answer claims supported by query or recalled memory / answer claims`
 - `memory_lift = 1.0` when the memory-enabled answer covers more expected facts
   than `baseline_answer`, otherwise `0.0`
+- `memory_lift_delta = answer_fact_coverage - baseline_answer_fact_coverage`
 
 ### 10.3 Optional Metric Behavior
 
@@ -286,26 +332,23 @@ Rules:
 - if `forbidden_answer_facts` is empty, `forbidden_fact_absence_rate = None`
 - if `obsolete_facts` is empty, `obsolete_fact_suppression_rate = None`
 - if `baseline_answer is None`, `memory_lift = None`
+- if `baseline_answer is None`, `memory_lift_delta = None`
 
 `answer_fact_coverage` should be `1.0` when `expected_answer_facts` is empty.
-`grounding_rate` should be `1.0` when no answer claims are defined or extracted.
+Because an empty expectation set can hide weak case design, curated version 0.1
+cases with empty `expected_answer_facts` must use a risk label that explains
+why no positive answer fact is expected, such as `noise-only` or
+`forbidden-only`.
 
 ### 10.4 Grounding Contract
 
-Version 0.1 should not attempt open-ended claim extraction. Instead, each case
-may define the answer claims to score, or the evaluator may default to:
+Version 0.1 does not compute a separate `grounding_rate`. The earlier
+grounding-like requirement is represented by `memory_fact_usage_rate` and by
+forbidden/obsolete fact absence metrics.
 
-- `expected_answer_facts`
-- `expected_memory_facts_used`
-- represented facts found in the answer
-
-A claim is grounded when its normalized tokens are a subset of either:
-
-- the query tokens
-- at least one recalled memory snippet's tokens
-
-Claims supported only by the deterministic assistant's template text should not
-count as grounded memory facts.
+`answer_claims` is included in the case shape only as a future extension point
+for live or semantic answer evaluation. It should not affect version 0.1
+scorecards.
 
 ## 11. Aggregate Reporting
 
@@ -323,9 +366,9 @@ Recommended scorecard fields:
 - `mean_forbidden_fact_absence_rate`
 - `n_obsolete_cases`
 - `mean_obsolete_fact_suppression_rate`
-- `mean_grounding_rate`
 - `n_lift_cases`
 - `memory_lift_rate`
+- `mean_memory_lift_delta`
 
 Each mean field excludes cases where the corresponding per-case metric is
 `None`. The companion `n_*` field reports the denominator.
@@ -351,8 +394,8 @@ Initial floors should be conservative:
 - `mean_preference_adherence_rate >= 0.85`
 - `mean_forbidden_fact_absence_rate >= 0.95`
 - `mean_obsolete_fact_suppression_rate >= 0.95`
-- `mean_grounding_rate >= 0.85`
 - `memory_lift_rate >= 0.80`
+- `mean_memory_lift_delta > 0.0`
 
 Exact floors may be adjusted during TDD once the curated corpus is implemented,
 but the suite should avoid a single blended total score.
@@ -403,8 +446,13 @@ Required validation:
 
 - every `expected_memory_facts_used` fact must be present in at least one
   recalled memory snippet
-- every `obsolete_facts` fact must be absent from `expected_answer_facts`
+- every `expected_preferences_applied` fact must also be present in
+  `expected_answer_facts`
+- `forbidden_answer_facts` must not overlap `expected_answer_facts`
+- `obsolete_facts` must not overlap `expected_answer_facts`
 - if `baseline_answer` is not `None`, it must be non-empty after trimming
+- if `answer` is not `None`, it must be non-empty after trimming
+- if `expected_answer_facts` is empty, `risk_labels` must explain why
 - case ids must be unique within curated benchmark helpers
 
 Failure output should include:
@@ -424,11 +472,13 @@ Failure output should include:
 Implementation should follow TDD red-green-refactor:
 
 1. add minimal failing tests for token matching and metric computation
-2. add deterministic assistant behavior
-3. add optional metric and scorecard aggregation tests
-4. add curated healthy cases
-5. add risk cases that intentionally expose weaknesses
-6. add final memory-suite regression
+2. add answer-selection tests for generated-answer and prewritten-answer modes
+3. add deterministic assistant behavior for healthy generated-answer cases
+4. add optional metric and scorecard aggregation tests
+5. add curated healthy cases
+6. add risk cases that intentionally expose weaknesses through prewritten
+   answers
+7. add final memory-suite regression
 
 The first implementation should avoid production code changes.
 
