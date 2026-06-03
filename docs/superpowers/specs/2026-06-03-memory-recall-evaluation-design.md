@@ -119,14 +119,14 @@ The deterministic selector should inspect:
 
 - the user query
 - each manifest line from `MEMORY.md`
-- optionally the indexed title, filename stem, and description
+- the indexed filename stem and description carried by each manifest line
 
 It should assign a stable lexical score to each indexed entry. The exact
 formula may evolve during implementation, but version 0.1 assumes:
 
 1. tokenize query and manifest text into lowercase terms
 2. score term overlap between query and each entry
-3. allow title and description tokens to contribute more than filename tokens
+3. allow description tokens to contribute more than filename tokens
 4. break ties deterministically by filename
 5. return up to `MAX_RECALLED_MEMORIES`
 
@@ -185,7 +185,7 @@ Each case should define:
 - `query`
 - `index_content: str`
 - `memory_files: dict[str, str]`
-- `expected_filenames: list[str]`
+- `expected_filenames: set[str]`
 - optional `expected_top1: str`
 
 The benchmark representation may be JSON, YAML, or inline Python structures.
@@ -198,10 +198,22 @@ Field meanings:
   terminology between "memory index" and `MEMORY.md`
 - `memory_files`: mapping of `filename -> full markdown file content`; helpers
   should write these contents directly into the temporary memory directory
-- `expected_filenames`: serialized list form of the gold filename set; helpers
-  may normalize it to a set for order-insensitive metrics
+- `expected_filenames`: the gold filename set for set-based quality assertions;
+  version 0.1 does not assign full-order meaning to this field
 - `expected_top1`: optional first-result expectation for cases that care about
   ranking, not just set membership
+
+Version 0.1 treats `expected_filenames` as an unordered set. If a serialized
+fixture format lacks a native set type, the loader may normalize an equivalent
+list representation into a set during case loading, but the semantic contract
+remains set-based.
+
+Curated version 0.1 fixtures should also keep `index_content` below the
+`MEMORY.md` truncation thresholds enforced by the runtime index loader. In
+practice that means benchmark fixtures should stay under both:
+
+- `MAX_ENTRYPOINT_LINES`
+- `MAX_ENTRYPOINT_BYTES`
 
 ### 8.3 Perturbation Generation Policy
 
@@ -255,6 +267,9 @@ Definitions:
   otherwise `0.0`
 - `topk_full_match = 1.0` when the selected filename set exactly matches the
   expected filename set, otherwise `0.0`
+
+If no files are selected and the case defines `expected_top1`, `top1_hit` is
+defined as `0.0`.
 
 `k` is fixed to `MAX_RECALLED_MEMORIES` in version 0.1.
 
