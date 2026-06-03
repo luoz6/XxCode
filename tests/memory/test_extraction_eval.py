@@ -102,3 +102,129 @@ def test_incomplete_candidate_memory_reduces_field_completeness():
     assert metrics.field_completeness_rate == 0.0
     assert metrics.memory_type_accuracy == 1.0
     assert metrics.invalid_candidate_filenames == set()
+
+
+def test_expected_fact_coverage_uses_lexical_token_matching():
+    case = ExtractionEvalCase(
+        case_id="fact-coverage",
+        conversation=[
+            {"role": "user", "content": "I prefer snake_case in Python tests."},
+        ],
+        existing_memory_files={},
+        candidate_memory_files={
+            "python-style.md": memory_file(
+                "user",
+                "Python Style",
+                "User prefers snake_case",
+                "Use snake_case in Python tests.",
+            ),
+        },
+        expected_memory_filenames={"python-style.md"},
+        expected_facts={
+            "user prefers snake_case",
+            "python tests",
+            "pytest strict fixtures",
+        },
+        expected_types={"python-style.md": "user"},
+    )
+
+    metrics = compute_extraction_metrics(case)
+
+    assert metrics.expected_fact_coverage == 2 / 3
+    assert metrics.missing_expected_facts == {"pytest strict fixtures"}
+
+
+def test_grounding_rate_uses_claim_text_as_default_evidence():
+    case = ExtractionEvalCase(
+        case_id="grounding-default-evidence",
+        conversation=[
+            {"role": "user", "content": "Use pandas dataframes for analysis."},
+        ],
+        existing_memory_files={},
+        candidate_memory_files={
+            "analysis-style.md": memory_file(
+                "user",
+                "Analysis Style",
+                "Use pandas dataframes",
+                "Use pandas dataframes for analysis.",
+            ),
+        },
+        expected_memory_filenames={"analysis-style.md"},
+        expected_facts={"use pandas dataframes"},
+        expected_types={"analysis-style.md": "user"},
+    )
+
+    metrics = compute_extraction_metrics(case)
+
+    assert metrics.grounding_rate == 1.0
+
+
+def test_grounding_rate_uses_source_evidence_override():
+    case = ExtractionEvalCase(
+        case_id="grounding-override",
+        conversation=[
+            {"role": "user", "content": "Use pathlib instead of os.path."},
+        ],
+        existing_memory_files={},
+        candidate_memory_files={
+            "path-style.md": memory_file(
+                "feedback",
+                "Path Style",
+                "Prefer pathlib APIs",
+                "Prefer pathlib APIs for path manipulation.",
+            ),
+        },
+        expected_memory_filenames={"path-style.md"},
+        expected_facts={"prefer pathlib APIs"},
+        expected_types={"path-style.md": "feedback"},
+        source_evidence={"prefer pathlib APIs": {"pathlib instead of os path"}},
+    )
+
+    metrics = compute_extraction_metrics(case)
+
+    assert metrics.grounding_rate == 1.0
+
+
+def test_forbidden_fact_leak_reduces_noise_suppression_rate():
+    case = ExtractionEvalCase(
+        case_id="noise-leak",
+        conversation=[
+            {"role": "user", "content": "Temporarily debug port 5432 today."},
+        ],
+        existing_memory_files={},
+        candidate_memory_files={
+            "debug-note.md": memory_file(
+                "project",
+                "Debug Note",
+                "Temporary port 5432 debug",
+                "Temporarily debug port 5432 today.",
+            ),
+        },
+        expected_memory_filenames=set(),
+        expected_facts=set(),
+        expected_types={"debug-note.md": "project"},
+        forbidden_facts={"temporary port 5432 debug", "secret token abc"},
+    )
+
+    metrics = compute_extraction_metrics(case)
+
+    assert metrics.noise_suppression_rate == 0.5
+    assert metrics.forbidden_fact_leak_count == 1
+    assert metrics.leaked_forbidden_facts == {"temporary port 5432 debug"}
+
+
+def test_empty_forbidden_facts_excludes_noise_suppression_rate():
+    case = ExtractionEvalCase(
+        case_id="no-forbidden-facts",
+        conversation=[],
+        existing_memory_files={},
+        candidate_memory_files={},
+        expected_memory_filenames=set(),
+        expected_facts=set(),
+        expected_types={},
+    )
+
+    metrics = compute_extraction_metrics(case)
+
+    assert metrics.noise_suppression_rate is None
+    assert metrics.forbidden_fact_leak_count == 0

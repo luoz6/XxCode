@@ -117,6 +117,26 @@ def compute_extraction_metrics(case: ExtractionEvalCase) -> ExtractionMetrics:
         case.existing_memory_files,
     )
     parsed_for_type_checks = {**parsed_existing, **parsed}
+    candidate_text_by_file = {
+        filename: _entry_text(entry) for filename, entry in parsed.items()
+    }
+    represented_expected_facts = _represented_facts(
+        case.expected_facts,
+        list(candidate_text_by_file.values()),
+    )
+    missing_expected_facts = case.expected_facts - represented_expected_facts
+    grounding_rate = _grounding_rate(case)
+    leaked_forbidden_facts = _represented_facts(
+        case.forbidden_facts,
+        list(candidate_text_by_file.values()),
+    )
+    noise_suppression_rate = None
+    if case.forbidden_facts:
+        noise_suppression_rate = _safe_div(
+            len(case.forbidden_facts) - len(leaked_forbidden_facts),
+            len(case.forbidden_facts),
+            0.0,
+        )
 
     valid_count = len(parsed)
     candidate_count = len(case.candidate_memory_files)
@@ -150,15 +170,19 @@ def compute_extraction_metrics(case: ExtractionEvalCase) -> ExtractionMetrics:
             len(case.expected_memory_filenames),
             1.0,
         ),
-        expected_fact_coverage=1.0,
-        grounding_rate=1.0,
-        noise_suppression_rate=None,
-        forbidden_fact_leak_count=0,
+        expected_fact_coverage=_safe_div(
+            len(represented_expected_facts),
+            len(case.expected_facts),
+            1.0,
+        ),
+        grounding_rate=grounding_rate,
+        noise_suppression_rate=noise_suppression_rate,
+        forbidden_fact_leak_count=len(leaked_forbidden_facts),
         duplicate_control_rate=None,
         conflict_update_correctness=None,
         invalid_candidate_filenames=invalid_filenames,
-        missing_expected_facts=set(),
-        leaked_forbidden_facts=set(),
+        missing_expected_facts=missing_expected_facts,
+        leaked_forbidden_facts=leaked_forbidden_facts,
         wrong_type_filenames=wrong_type_filenames,
         operations=operations,
     )
@@ -268,6 +292,43 @@ def _wrong_type_filenames(
         if entry is None or entry.memory_type.value != expected_type:
             wrong.add(filename)
     return wrong
+
+
+def _represented_facts(facts: set[str], candidate_texts: list[str]) -> set[str]:
+    """Return facts whose tokens appear in one candidate memory.
+
+    Phase one uses token-subset matching. Token order and negation are not
+    considered. False positives on token-identical but semantically opposite
+    texts are a known limitation.
+    """
+    represented: set[str] = set()
+    candidate_token_sets = [_tokens(text) for text in candidate_texts]
+    for fact in facts:
+        fact_tokens = _tokens(fact)
+        if fact_tokens and any(
+            fact_tokens.issubset(candidate_tokens)
+            for candidate_tokens in candidate_token_sets
+        ):
+            represented.add(fact)
+        elif not fact_tokens and not fact.strip():
+            represented.add(fact)
+    return represented
+
+
+def _grounding_rate(case: ExtractionEvalCase) -> float:
+    claims = case.candidate_claims or case.expected_facts
+    if not claims:
+        return 1.0
+    conversation_tokens = _tokens(flatten_conversation_text(case.conversation))
+    grounded = 0
+    for claim in claims:
+        evidence_values = case.source_evidence.get(claim, {claim})
+        if any(
+            _tokens(evidence).issubset(conversation_tokens)
+            for evidence in evidence_values
+        ):
+            grounded += 1
+    return _safe_div(grounded, len(claims), 1.0)
 
 
 def _safe_div(numerator: int, denominator: int, empty_value: float) -> float:
