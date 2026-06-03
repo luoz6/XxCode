@@ -103,7 +103,8 @@ Secondary fields remain useful and should be preserved or clarified:
   should not be the exactness target of contribution tests
 - `collapse_count`: net message reduction produced by `collapse_messages()`,
   not "collapsed exchange count"
-- `auto_triggered`: whether L4 ran
+- `auto_triggered`: whether L4 was attempted, not whether it necessarily
+  succeeded
 
 ### 6.3 Consistency Rule
 
@@ -162,6 +163,24 @@ L2 needs one exact count metric in addition to token contribution:
 This avoids overloading `micro_truncated` with an exact meaning it does not
 currently carry.
 
+### 6.6 Caller-Provided Token Baseline Contract
+
+Because `tokens_before` may come either from a caller-provided `current_tokens`
+value or from `token_count_with_estimation(messages)`, contribution tests must
+avoid inconsistent baselines.
+
+If a caller passes a `current_tokens` value that is materially lower than the
+pipeline's own estimate of the same input, a later per-level contribution such
+as `snip_tokens_freed` could become negative even when the compressor behaved
+correctly.
+
+Therefore contribution fixtures should do one of the following:
+
+1. pass `current_tokens=None` and let the pipeline compute `tokens_before`
+   internally
+2. provide a `current_tokens` value that is intentionally consistent with
+   `token_count_with_estimation()` on the same pre-compression message list
+
 ## 7. L4 Testing Policy
 
 L4 should be tested deterministically by monkeypatching `_autocompact()` to
@@ -181,6 +200,11 @@ L4 tests should verify:
 - the injected summary message appears in the compressed result
 - budget carryover still deducts the pre-compact waterline when
   `state.task_budget_remaining` is explicitly initialized
+
+`auto_triggered` means that L4 was entered and attempted. It does not mean the
+summary step succeeded. When `_autocompact()` raises and the pipeline falls
+through the exception handler, `auto_triggered` remains `True` while
+`auto_tokens_freed` may still be `0`.
 
 L4 suppression tests should also verify:
 
@@ -211,6 +235,11 @@ Token estimation strategy:
 
 - use deterministic rough-estimate fixtures by controlling message character
   counts and omitting usage anchors
+- prefer `current_tokens=None` unless a fixture explicitly needs to model a
+  caller-provided baseline
+- if a fixture does pass `current_tokens`, it must match
+  `token_count_with_estimation()` on the same input closely enough to preserve
+  non-negative per-level contributions
 
 Assertions:
 
@@ -349,6 +378,7 @@ These initial fixtures should explicitly declare whether they rely on:
 
 - controlled `rough_estimate` behavior through exact character counts
 - or monkeypatched token estimation for isolation
+- and whether `current_tokens` is pipeline-computed or caller-provided
 
 ### Step 2
 
