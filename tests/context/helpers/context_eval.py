@@ -8,6 +8,7 @@ from typing import Any
 
 from xxcode.config import Config
 from xxcode.context.builder import build_memory_section, build_system_prompt
+from xxcode.context.pipeline import ContextPipeline
 from xxcode.context.tokens import token_count_with_estimation
 from xxcode.memory.injection import (
     MEMORY_INDEX_SOURCE,
@@ -129,6 +130,15 @@ async def run_context_case(
     if recalled_message is not None:
         _insert_before_current_user_message(prepared_messages, recalled_message)
 
+    pipeline = ContextPipeline(config)
+    prepared_messages, stats = await pipeline.compress(
+        prepared_messages,
+        current_tokens=None,
+        system_prompt=system_prompt,
+        context_limit=_derived_context_limit(case),
+        threshold=_derived_threshold(case),
+    )
+
     flattened = render_flattened_snapshot(system_prompt, prepared_messages)
     token_counts = {
         "prepared_messages_tokens": token_count_with_estimation(prepared_messages),
@@ -147,9 +157,9 @@ async def run_context_case(
             recall_empty=(len(recalled) == 0),
         ),
         compression_diagnostics=CompressionDiagnostics(
-            compression_used=False,
-            level_reached=0,
-            summary_injected=False,
+            compression_used=stats.level_reached >= 1,
+            level_reached=stats.level_reached,
+            summary_injected=("[Conversation summary]" in flattened),
         ),
     )
 
@@ -282,3 +292,18 @@ def _insert_before_current_user_message(messages: list[dict[str, Any]], message:
         messages.insert(len(messages) - 1, message)
     else:
         messages.append(message)
+
+
+def _derived_context_limit(case: ContextEvalCase) -> int:
+    soft_limit = case.budget_expectation["soft_limit_tokens"]
+    threshold = _derived_threshold(case)
+    return int(soft_limit / threshold)
+
+
+def _derived_threshold(case: ContextEvalCase) -> float:
+    # Phase-one convention: non-compression cases use 1.0 so the derived
+    # soft limit equals the derived context limit and compression stays off
+    # unless a case explicitly sizes itself to require it.
+    if case.expected_compression_level >= 1:
+        return 0.5
+    return 1.0

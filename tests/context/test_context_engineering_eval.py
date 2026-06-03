@@ -176,3 +176,89 @@ async def test_run_context_case_injects_memory_index_and_recalled_memory(tmp_pat
     assert snapshot.recall_diagnostics.index_injected is True
     assert snapshot.recall_diagnostics.recalled_count == 1
     assert snapshot.recall_diagnostics.recall_empty is False
+
+
+def _compressing_case() -> ContextEvalCase:
+    noisy_result = (
+        "Collecting demo-package\n"
+        "Downloading demo-package\n"
+        "Successfully installed demo-package\n\n"
+        + ("Collecting demo-package\nDownloading demo-package\n" * 80)
+    )
+    return ContextEvalCase(
+        case_id="compression-budget",
+        scenario="Noisy historical tool output is compressed while recent context remains.",
+        cwd_files={"CLAUDE.md": "Respect recent task context."},
+        messages=[
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-1",
+                        "name": "run_shell",
+                        "input": {"command": "pip install demo-package"},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-1",
+                        "content": noisy_result,
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "I checked the install output."}],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "Keep processor.py as the current focus."}],
+            },
+        ],
+        memory_index_content="",
+        memory_files={},
+        target_turn_index=3,
+        expected_compression_level=1,
+        expected_present=["Keep processor.py as the current focus."],
+        expected_absent=["Collecting demo-package\nDownloading demo-package\nCollecting demo-package"],
+        expected_recent_present=["Keep processor.py as the current focus."],
+        expected_stale_absent=["Successfully installed demo-package"],
+        expected_order=[],
+        required_sections=[],
+        expected_recall_diagnostics=RecallDiagnostics(
+            index_injected=True,
+            recalled_count=0,
+            recall_empty=True,
+        ),
+        expected_compression_diagnostics=CompressionDiagnostics(
+            compression_used=True,
+            level_reached=1,
+            summary_injected=False,
+        ),
+        budget_expectation={
+            "soft_limit_tokens": 200,
+            "hard_limit_tokens": 400,
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_context_case_applies_compression_and_budget_checks(tmp_path):
+    case = _compressing_case()
+
+    snapshot = await run_context_case(
+        case,
+        memory_dir=tmp_path / "memory",
+        cwd=tmp_path / "cwd",
+    )
+
+    assert "Keep processor.py as the current focus." in snapshot.flattened_text_snapshot
+    assert "Collecting demo-package\nDownloading demo-package\nCollecting demo-package" not in snapshot.flattened_text_snapshot
+    assert snapshot.compression_diagnostics.compression_used is True
+    assert snapshot.compression_diagnostics.level_reached == 1
+    assert snapshot.token_counts["prepared_messages_tokens"] < case.budget_expectation["soft_limit_tokens"]
