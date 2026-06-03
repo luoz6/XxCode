@@ -2,7 +2,10 @@ import pytest
 
 from tests.memory.helpers.effectiveness_eval import (
     EffectivenessEvalCase,
+    build_effectiveness_scorecard,
     compute_effectiveness_metrics,
+    effectiveness_benchmark_cases,
+    format_effectiveness_scorecard,
     represented_facts,
 )
 
@@ -165,3 +168,50 @@ def test_memory_lift_reports_binary_pass_and_delta():
 
     assert metrics.memory_lift == 1.0
     assert metrics.memory_lift_delta == 1.0
+
+
+def test_effectiveness_benchmark_cases_cover_healthy_and_risk_paths():
+    metrics_by_case = {
+        case.case_id: compute_effectiveness_metrics(case)
+        for case in effectiveness_benchmark_cases()
+    }
+
+    assert metrics_by_case["preference-adherence"].memory_fact_usage_rate == 1.0
+    assert metrics_by_case["project-rule-usage"].answer_fact_coverage == 1.0
+    assert metrics_by_case["stale-memory-risk"].obsolete_fact_suppression_rate == 0.0
+    assert metrics_by_case["generic-answer-risk"].memory_fact_usage_rate == 0.0
+    assert metrics_by_case["ungrounded-answer-risk"].forbidden_fact_absence_rate == 0.0
+
+
+def test_effectiveness_scorecard_excludes_none_metrics_from_optional_means():
+    metrics = [
+        compute_effectiveness_metrics(case)
+        for case in effectiveness_benchmark_cases()
+    ]
+
+    scorecard = build_effectiveness_scorecard(metrics)
+
+    assert scorecard.n_cases == len(metrics)
+    assert scorecard.n_memory_usage_cases > 0
+    assert scorecard.n_preference_cases > 0
+    assert scorecard.n_forbidden_cases > 0
+    assert scorecard.n_obsolete_cases > 0
+    assert scorecard.n_lift_cases > 0
+    assert 0.0 <= scorecard.mean_answer_fact_coverage <= 1.0
+    assert 0.0 <= scorecard.mean_memory_fact_usage_rate <= 1.0
+    assert scorecard.mean_memory_lift_delta > 0.0
+
+
+def test_effectiveness_scorecard_summary_includes_key_metrics():
+    metrics = [
+        compute_effectiveness_metrics(case)
+        for case in effectiveness_benchmark_cases()
+    ]
+    scorecard = build_effectiveness_scorecard(metrics)
+
+    summary = format_effectiveness_scorecard(scorecard)
+
+    assert "n_cases=" in summary
+    assert "mean_answer_fact_coverage=" in summary
+    assert "n_memory_usage_cases=" in summary
+    assert "mean_memory_lift_delta=" in summary

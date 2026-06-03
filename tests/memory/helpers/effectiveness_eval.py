@@ -39,6 +39,23 @@ class EffectivenessMetrics:
     leaked_obsolete_facts: set[str]
 
 
+@dataclass(frozen=True)
+class EffectivenessScorecard:
+    n_cases: int = 0
+    mean_answer_fact_coverage: float = 0.0
+    n_memory_usage_cases: int = 0
+    mean_memory_fact_usage_rate: float = 0.0
+    n_preference_cases: int = 0
+    mean_preference_adherence_rate: float = 0.0
+    n_forbidden_cases: int = 0
+    mean_forbidden_fact_absence_rate: float = 0.0
+    n_obsolete_cases: int = 0
+    mean_obsolete_fact_suppression_rate: float = 0.0
+    n_lift_cases: int = 0
+    memory_lift_rate: float = 0.0
+    mean_memory_lift_delta: float = 0.0
+
+
 def represented_facts(facts: set[str], texts: list[str]) -> set[str]:
     represented: set[str] = set()
     text_token_sets = [_tokens(text) for text in texts]
@@ -115,6 +132,161 @@ def compute_effectiveness_metrics(case: EffectivenessEvalCase) -> EffectivenessM
         used_memory_facts=used_memory_facts,
         leaked_forbidden_facts=leaked_forbidden,
         leaked_obsolete_facts=leaked_obsolete,
+    )
+
+
+def effectiveness_benchmark_cases() -> list[EffectivenessEvalCase]:
+    return [
+        EffectivenessEvalCase(
+            case_id="preference-adherence",
+            query="How should I write Python tests?",
+            recalled_memories={
+                "style.md": "User prefers snake_case in Python tests.",
+            },
+            expected_answer_facts={"user prefers snake_case", "python tests"},
+            expected_memory_facts_used={"user prefers snake_case"},
+            expected_preferences_applied={"user prefers snake_case"},
+        ),
+        EffectivenessEvalCase(
+            case_id="project-rule-usage",
+            query="What should I do before completing the task?",
+            recalled_memories={
+                "project-rule.md": "Always run pytest before completion.",
+            },
+            expected_answer_facts={"run pytest", "before completion"},
+            expected_memory_facts_used={"run pytest"},
+        ),
+        EffectivenessEvalCase(
+            case_id="stale-memory-risk",
+            query="Which path API should I use?",
+            recalled_memories={
+                "path-style.md": "Use pathlib instead of os.path.",
+            },
+            answer="Use os.path for path manipulation.",
+            expected_answer_facts={"use pathlib"},
+            expected_memory_facts_used={"use pathlib"},
+            obsolete_facts={"use os path"},
+            risk_labels={"stale-memory"},
+        ),
+        EffectivenessEvalCase(
+            case_id="memory-lift",
+            query="How should I write tests?",
+            recalled_memories={
+                "style.md": "User prefers snake_case in Python tests.",
+            },
+            baseline_answer="Write clear tests.",
+            expected_answer_facts={"user prefers snake_case", "python tests"},
+            expected_memory_facts_used={"user prefers snake_case"},
+            expected_preferences_applied={"user prefers snake_case"},
+        ),
+        EffectivenessEvalCase(
+            case_id="project-lift",
+            query="What should I do before completion?",
+            recalled_memories={
+                "project-rule.md": "Always run pytest before completion.",
+            },
+            baseline_answer="Review your work before completion.",
+            expected_answer_facts={"run pytest", "before completion"},
+            expected_memory_facts_used={"run pytest"},
+        ),
+        EffectivenessEvalCase(
+            case_id="generic-answer-risk",
+            query="How should I write tests?",
+            recalled_memories={
+                "style.md": "User prefers snake_case in Python tests.",
+            },
+            answer="Write clear tests.",
+            expected_answer_facts={"user prefers snake_case"},
+            expected_memory_facts_used={"user prefers snake_case"},
+            expected_preferences_applied={"user prefers snake_case"},
+            risk_labels={"generic-answer"},
+        ),
+        EffectivenessEvalCase(
+            case_id="ungrounded-answer-risk",
+            query="How should I write tests?",
+            recalled_memories={
+                "style.md": "User prefers snake_case in Python tests.",
+            },
+            answer="Use snake_case and secret token abc.",
+            expected_answer_facts={"user prefers snake_case"},
+            expected_memory_facts_used={"user prefers snake_case"},
+            expected_preferences_applied={"user prefers snake_case"},
+            forbidden_answer_facts={"secret token abc"},
+            risk_labels={"ungrounded-answer"},
+        ),
+    ]
+
+
+def build_effectiveness_scorecard(
+    metrics: list[EffectivenessMetrics],
+) -> EffectivenessScorecard:
+    if not metrics:
+        return EffectivenessScorecard()
+    memory_values = [
+        metric.memory_fact_usage_rate
+        for metric in metrics
+        if metric.memory_fact_usage_rate is not None
+    ]
+    preference_values = [
+        metric.preference_adherence_rate
+        for metric in metrics
+        if metric.preference_adherence_rate is not None
+    ]
+    forbidden_values = [
+        metric.forbidden_fact_absence_rate
+        for metric in metrics
+        if metric.forbidden_fact_absence_rate is not None
+    ]
+    obsolete_values = [
+        metric.obsolete_fact_suppression_rate
+        for metric in metrics
+        if metric.obsolete_fact_suppression_rate is not None
+    ]
+    lift_values = [
+        metric.memory_lift
+        for metric in metrics
+        if metric.memory_lift is not None
+    ]
+    lift_delta_values = [
+        metric.memory_lift_delta
+        for metric in metrics
+        if metric.memory_lift_delta is not None
+    ]
+    return EffectivenessScorecard(
+        n_cases=len(metrics),
+        mean_answer_fact_coverage=(
+            sum(metric.answer_fact_coverage for metric in metrics) / len(metrics)
+        ),
+        n_memory_usage_cases=len(memory_values),
+        mean_memory_fact_usage_rate=_mean_optional(memory_values),
+        n_preference_cases=len(preference_values),
+        mean_preference_adherence_rate=_mean_optional(preference_values),
+        n_forbidden_cases=len(forbidden_values),
+        mean_forbidden_fact_absence_rate=_mean_optional(forbidden_values),
+        n_obsolete_cases=len(obsolete_values),
+        mean_obsolete_fact_suppression_rate=_mean_optional(obsolete_values),
+        n_lift_cases=len(lift_values),
+        memory_lift_rate=_mean_optional(lift_values),
+        mean_memory_lift_delta=_mean_optional(lift_delta_values),
+    )
+
+
+def format_effectiveness_scorecard(scorecard: EffectivenessScorecard) -> str:
+    return (
+        "effectiveness "
+        f"n_cases={scorecard.n_cases} "
+        f"mean_answer_fact_coverage={scorecard.mean_answer_fact_coverage:.3f} "
+        f"n_memory_usage_cases={scorecard.n_memory_usage_cases} "
+        f"mean_memory_fact_usage_rate={scorecard.mean_memory_fact_usage_rate:.3f} "
+        f"n_preference_cases={scorecard.n_preference_cases} "
+        f"mean_preference_adherence_rate={scorecard.mean_preference_adherence_rate:.3f} "
+        f"n_forbidden_cases={scorecard.n_forbidden_cases} "
+        f"mean_forbidden_fact_absence_rate={scorecard.mean_forbidden_fact_absence_rate:.3f} "
+        f"n_obsolete_cases={scorecard.n_obsolete_cases} "
+        f"mean_obsolete_fact_suppression_rate={scorecard.mean_obsolete_fact_suppression_rate:.3f} "
+        f"n_lift_cases={scorecard.n_lift_cases} "
+        f"memory_lift_rate={scorecard.memory_lift_rate:.3f} "
+        f"mean_memory_lift_delta={scorecard.mean_memory_lift_delta:.3f}"
     )
 
 
@@ -212,6 +384,12 @@ def _safe_div(numerator: int, denominator: int, empty_value: float) -> float:
     if denominator == 0:
         return empty_value
     return numerator / denominator
+
+
+def _mean_optional(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    return sum(values) / len(values)
 
 
 def _tokens(text: str) -> set[str]:
