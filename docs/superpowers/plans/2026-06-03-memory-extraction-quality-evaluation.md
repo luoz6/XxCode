@@ -32,6 +32,8 @@
 Create `tests/memory/test_extraction_eval.py` with:
 
 ```python
+import pytest
+
 from tests.memory.helpers.extraction_eval import (
     ExtractionEvalCase,
     classify_operations,
@@ -170,9 +172,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import yaml
-
-from xxcode.memory.models import MemoryEntry, MemoryType, parse_memory_file
+from xxcode.memory.models import (
+    MemoryEntry,
+    MemoryType,
+    _parse_frontmatter,
+    parse_memory_file,
+)
 
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
@@ -385,16 +390,8 @@ def _entry_text(entry: MemoryEntry) -> str:
 
 
 def _has_parseable_frontmatter(content: str) -> bool:
-    if not content.startswith("---"):
-        return False
-    parts = content.split("---", 2)
-    if len(parts) < 3:
-        return False
-    try:
-        metadata = yaml.safe_load(parts[1])
-    except yaml.YAMLError:
-        return False
-    return isinstance(metadata, dict)
+    metadata, _body = _parse_frontmatter(content)
+    return bool(metadata)
 
 
 def _is_complete(entry: MemoryEntry) -> bool:
@@ -640,6 +637,12 @@ Add these helper functions below `_wrong_type_filenames(...)`:
 
 ```python
 def _represented_facts(facts: set[str], candidate_texts: list[str]) -> set[str]:
+    """Return facts whose tokens appear in one candidate memory.
+
+    Phase one uses token-subset matching. Token order and negation are not
+    considered. False positives on token-identical but semantically opposite
+    texts are a known limitation.
+    """
     represented: set[str] = set()
     candidate_token_sets = [_tokens(text) for text in candidate_texts]
     for fact in facts:
@@ -849,12 +852,8 @@ def test_expected_updated_filename_must_be_classified_as_updated():
         expected_updated_filenames={"project-rule.md"},
     )
 
-    try:
+    with pytest.raises(ValueError, match="expected updated files were not updated"):
         compute_extraction_metrics(case)
-    except AssertionError as exc:
-        assert "expected updated files were not updated" in str(exc)
-    else:
-        raise AssertionError("expected update validation to fail")
 
 
 def test_expected_deleted_filename_must_be_classified_as_deleted():
@@ -875,12 +874,8 @@ def test_expected_deleted_filename_must_be_classified_as_deleted():
         expected_deleted_filenames={"temporary-note.md"},
     )
 
-    try:
+    with pytest.raises(ValueError, match="expected deleted files were not deleted"):
         compute_extraction_metrics(case)
-    except AssertionError as exc:
-        assert "expected deleted files were not deleted" in str(exc)
-    else:
-        raise AssertionError("expected delete validation to fail")
 ```
 
 - [ ] **Step 3: Run Task 3 tests to verify they fail**
@@ -931,13 +926,13 @@ def _validate_candidate_expectations(
 ) -> None:
     missing_updates = case.expected_updated_filenames - operations.updated_filenames
     if missing_updates:
-        raise AssertionError(
+        raise ValueError(
             f"{case.case_id}: expected updated files were not updated: "
             f"{sorted(missing_updates)}"
         )
     missing_deletes = case.expected_deleted_filenames - operations.deleted_filenames
     if missing_deletes:
-        raise AssertionError(
+        raise ValueError(
             f"{case.case_id}: expected deleted files were not deleted: "
             f"{sorted(missing_deletes)}"
         )
@@ -1394,7 +1389,17 @@ py -3.11 -m pytest tests/memory -v
 
 Expected: PASS.
 
-- [ ] **Step 3: Inspect task-specific diff**
+- [ ] **Step 3: Run context suite regression**
+
+Run:
+
+```powershell
+py -3.11 -m pytest tests/context -v
+```
+
+Expected: PASS.
+
+- [ ] **Step 4: Inspect task-specific diff**
 
 Run:
 
@@ -1404,7 +1409,7 @@ git diff -- tests/memory/helpers/extraction_eval.py tests/memory/test_extraction
 
 Expected: no output if all implementation tasks were committed separately. If output exists, inspect it and either commit task-specific changes or fix unintended edits.
 
-- [ ] **Step 4: Inspect task-specific status**
+- [ ] **Step 5: Inspect task-specific status**
 
 Run:
 
@@ -1414,7 +1419,7 @@ git status --short -- tests/memory/helpers/extraction_eval.py tests/memory/test_
 
 Expected: no output if all implementation tasks were committed separately.
 
-- [ ] **Step 5: Commit final batched changes only if previous task commits were skipped**
+- [ ] **Step 6: Commit final batched changes only if previous task commits were skipped**
 
 If implementation changes were intentionally batched and are still unstaged, run:
 
