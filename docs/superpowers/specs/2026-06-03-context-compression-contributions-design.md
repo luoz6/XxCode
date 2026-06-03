@@ -97,7 +97,10 @@ level as executed within the pipeline.
 Secondary fields remain useful and should be preserved or clarified:
 
 - `snip_removed`: characters removed by L1
-- `micro_truncated`: number of tool results actually cleared or truncated by L2
+- `micro_cleared`: exact number of compressible stale `tool_result` blocks
+  replaced with the L2 placeholder
+- `micro_truncated`: a legacy or diagnostic field only if still needed, but it
+  should not be the exactness target of contribution tests
 - `collapse_count`: number of messages or exchanges removed by L3, but its
   exact meaning must be made explicit in code and tests
 - `auto_triggered`: whether L4 ran
@@ -110,10 +113,48 @@ The tests should enforce a simple consistency rule:
 - each `*_tokens_freed` is non-negative
 - when a layer materially changes the message list, its token contribution is
   expected to be positive
+- when the fixture produces a positive overall reduction, the per-level token
+  contributions should approximately add up to the total reduction within a
+  10% tolerance
 
-The sum of per-level token contributions does not need to be mathematically
-perfect across every edge case, but it should be directionally and locally
-correct for deterministic fixtures.
+For fixtures with positive total reduction:
+
+`abs((sum(per_level_tokens_freed) - (tokens_before - tokens_after)) / (tokens_before - tokens_after)) <= 0.10`
+
+For no-op or identity fixtures:
+
+- `tokens_before == tokens_after`
+- every per-level token contribution in scope is exactly `0`
+
+If the test suite cannot satisfy this tolerance on deterministic fixtures, the
+design must treat that as evidence that the estimation strategy is too noisy for
+precise contribution accounting, and the limitation must be explained rather
+than silently tolerated.
+
+### 6.4 L1 Measurement Contract
+
+L1 must distinguish between token-level and character-level measurement:
+
+1. `snip_tokens_freed` is computed from the pipeline-visible token estimate
+   before and after `snip_messages()`
+2. `snip_removed` remains a character-only diagnostic signal derived from
+   `tool_result` payload content
+3. tests treat `snip_tokens_freed` as the primary assertion target and
+   `snip_removed` as a supporting consistency signal only
+
+This distinction is important because character savings are calculated only from
+`tool_result` payload strings, while token estimation observes the full message
+structure.
+
+### 6.5 L2 Exactness Contract
+
+L2 needs one exact count metric in addition to token contribution:
+
+- `micro_cleared` must count only the stale compressible `tool_result` blocks
+  actually rewritten to the placeholder
+
+This avoids overloading `micro_truncated` with an exact meaning it does not
+currently carry.
 
 ## 7. L4 Testing Policy
 
@@ -132,7 +173,8 @@ L4 tests should verify:
 - `auto_triggered` is `True`
 - `auto_tokens_freed > 0` for an oversized conversation
 - the injected summary message appears in the compressed result
-- budget carryover still deducts the pre-compact waterline
+- budget carryover still deducts the pre-compact waterline when
+  `state.task_budget_remaining` is explicitly initialized
 
 ## 8. Test Design
 
@@ -142,11 +184,20 @@ Add a focused test module:
 
 ### 8.1 L1 Snip Scenario
 
+This scenario explicitly tests `snip_messages()`, which is the L1 path used by
+the current runtime pipeline. It does not treat `snip_compact_if_needed()` as
+the same path.
+
 Construct a message history containing noisy tool output such as:
 
 - pip install progress
 - repeated download lines
 - progress bars
+
+Token estimation strategy:
+
+- use deterministic rough-estimate fixtures by controlling message character
+  counts and omitting usage anchors
 
 Assertions:
 
@@ -154,6 +205,19 @@ Assertions:
 - `snip_removed > 0`
 - `snip_tokens_freed > 0`
 - the resulting tool output is visibly smaller
+
+Also add a no-op subcase:
+
+- clean tool output with no matching noise patterns
+- `snip_messages()` returns effectively identical payloads
+- `snip_tokens_freed == 0`
+- the pipeline can continue into later levels if still over threshold
+
+### 8.1A Optional Non-Pipeline L1 Variant
+
+If `snip_compact_if_needed()` is tested, it should be described separately as an
+independent unit test because it is not currently wired into the runtime
+pipeline path.
 
 ### 8.2 L2 Microcompact Scenario
 
@@ -165,17 +229,28 @@ Construct several compressible `tool_result` blocks from eligible tools such as:
 
 Keep the most recent result fresh and make older ones stale.
 
+Token estimation strategy:
+
+- prefer deterministic rough-estimate fixtures with controlled payload sizes
+- monkeypatch token estimation only if exact fixture sizing becomes too brittle
+
 Assertions:
 
-- `micro_truncated` equals the number of stale compressible results actually
-  cleared
+- `micro_cleared` equals the exact number of stale compressible results
+  actually cleared
 - `micro_tokens_freed > 0`
+- `micro_truncated`, if retained, is treated as diagnostic only
 - recent preserved results remain intact
 
 ### 8.3 L3 Collapse Scenario
 
 Construct multiple older exchanges followed by a small recent tail so that L3
 must fold older history.
+
+Token estimation strategy:
+
+- use deterministic rough-estimate fixtures unless a targeted monkeypatch is
+  needed to isolate L3 from earlier levels
 
 Assertions:
 
@@ -189,23 +264,44 @@ Assertions:
 Construct a very large history that remains above threshold after L1-L3.
 Monkeypatch `_autocompact()` to return a fixed summary.
 
+Token estimation strategy:
+
+- prefer deterministic rough-estimate fixtures
+- if needed, monkeypatch token estimation only to isolate the L4 transition, not
+  to fake the final accounting result
+
+Budget setup precondition:
+
+- create an `AgentState`
+- set `state.task_budget_remaining = 50_000`
+
 Assertions:
 
 - `auto_triggered is True`
 - `auto_tokens_freed > 0`
 - the result includes `[Conversation summary]`
 - the old message history is replaced per the L4 contract
-- task budget carryover deducts the pre-L4 token waterline
+- `state.task_budget_remaining == 50_000 - tokens_before`
+
+If a test intentionally omits `task_budget_remaining`, it should explicitly
+state that budget-carryover assertions are out of scope for that fixture.
 
 ### 8.5 End-to-End Contribution Scenario
 
 Construct one intentionally oversized mixed history that can exercise multiple
 layers in sequence.
 
+Token estimation strategy:
+
+- use deterministic rough-estimate fixtures with controlled text sizes
+- do not rely on live API usage anchors for the baseline contribution suite
+
 Assertions:
 
 - `tokens_before > tokens_after`
 - at least two per-level contribution fields are positive
+- the summed per-level token contributions stay within the 10% tolerance of the
+  total token reduction
 - the combined result is smaller and structurally valid
 
 ## 9. TDD Execution Order
@@ -216,6 +312,11 @@ Implementation should follow red-green-refactor.
 
 Write failing tests for the new `CompressionStats` token contribution fields and
 L1 contribution behavior.
+
+These initial fixtures should explicitly declare whether they rely on:
+
+- controlled `rough_estimate` behavior through exact character counts
+- or monkeypatched token estimation for isolation
 
 ### Step 2
 
@@ -261,6 +362,7 @@ Mitigation:
 
 - tune `current_tokens`, thresholds, and fixture shape carefully
 - keep per-layer test messages intentionally narrow
+- document the token estimation strategy for each fixture
 
 ### Risk 3: L4 Becomes Flaky
 
@@ -279,8 +381,11 @@ This design is complete when:
    contributions
 2. tests cover L1 through L4 deterministically
 3. total `tokens_before` and `tokens_after` reductions are validated
-4. L4 coverage requires no live API dependency
-5. the new tests are written and implemented in TDD order
+4. the summed per-level token contributions stay within the agreed 10%
+   tolerance on positive-reduction fixtures
+5. L2 exact block clearing is verified through `micro_cleared`
+6. L4 coverage requires no live API dependency
+7. the new tests are written and implemented in TDD order
 
 ## 12. Spec Self-Review
 
@@ -288,8 +393,10 @@ Checklist results:
 
 - Placeholder scan: no `TODO`, `TBD`, or unresolved blanks remain.
 - Internal consistency: tokens are primary metrics, chars and message counts are
-  secondary diagnostics, and L4 remains deterministic.
+  secondary diagnostics, `micro_cleared` is the exact L2 count metric, and L4
+  remains deterministic.
 - Scope check: this spec stays focused on runtime message compression
   contribution testing.
-- Ambiguity check: L4 explicitly uses a monkeypatched summarizer rather than a
-  fake streamed client.
+- Ambiguity check: the spec now distinguishes token and character accounting,
+  separates pipeline L1 from the unused L1 variant, and explicitly states L4
+  budget preconditions.
