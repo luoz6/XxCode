@@ -508,3 +508,26 @@ def _with_rewritten_non_target_descriptions(case: RecallEvalCase) -> RecallEvalC
         expected_filenames=set(case.expected_filenames),
         expected_top1=case.expected_top1,
     )
+
+
+def format_quality_scorecard(scorecard: QualityScorecard) -> str:
+    return (
+        "quality "
+        f"n_cases={scorecard.n_cases} "
+        f"mean_precision_at_k={scorecard.mean_precision_at_k:.3f} "
+        f"mean_recall_at_k={scorecard.mean_recall_at_k:.3f} "
+        f"mean_f1_at_k={scorecard.mean_f1_at_k:.3f} "
+        f"top1_hit_rate={scorecard.top1_hit_rate:.3f} "
+        f"full_match_rate={scorecard.full_match_rate:.3f}"
+    )
+
+
+def format_stability_scorecard(scorecard: StabilityScorecard) -> str:
+    return (
+        "stability "
+        f"n_cases={scorecard.n_cases} "
+        f"repeat_consistency_rate={scorecard.repeat_consistency_rate:.3f} "
+        f"order_stability_rate={scorecard.order_stability_rate:.3f} "
+        f"noise_resistance_rate={scorecard.noise_resistance_rate:.3f} "
+        f"description_robustness_rate={scorecard.description_robustness_rate:.3f}"
+    )

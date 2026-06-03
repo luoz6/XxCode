@@ -3,6 +3,7 @@ import pytest
 from tests.memory.helpers.recall_eval import (
     build_stability_scorecard,
     compute_stability_metrics,
+    format_stability_scorecard,
     quality_benchmark_cases,
 )
 
@@ -35,9 +36,21 @@ async def test_stability_scorecard_reports_case_count_and_rates(tmp_path):
         metrics.append(await compute_stability_metrics(case, tmp_path / case.case_id))
 
     scorecard = build_stability_scorecard(metrics)
+    print(format_stability_scorecard(scorecard))
 
     assert scorecard.n_cases == len(quality_benchmark_cases())
     assert scorecard.repeat_consistency_rate == 1.0
     assert scorecard.order_stability_rate == 1.0
     assert scorecard.description_robustness_rate == 1.0
     assert scorecard.noise_resistance_rate >= 0.95
+
+
+def test_stability_scorecard_summary_includes_case_count_and_key_metrics():
+    metrics = []
+    scorecard = build_stability_scorecard(metrics)
+
+    summary = format_stability_scorecard(scorecard)
+
+    assert "n_cases=0" in summary
+    assert "repeat_consistency_rate=0.000" in summary
+    assert "noise_resistance_rate=0.000" in summary

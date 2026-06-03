@@ -8,6 +8,7 @@ from tests.memory.helpers.recall_eval import (
     RecallEvalCase,
     build_quality_scorecard,
     compute_quality_metrics,
+    format_quality_scorecard,
     quality_benchmark_cases,
     run_recall_case,
     validate_case,
@@ -115,6 +116,27 @@ def test_quality_metrics_compute_precision_recall_f1_and_top1():
     )
 
 
+def test_quality_scorecard_summary_includes_case_count_and_key_metrics():
+    scorecard = build_quality_scorecard([
+        QualityMetrics(
+            case_id="demo",
+            selected_filenames=["a.md"],
+            expected_filenames={"a.md"},
+            precision_at_k=1.0,
+            recall_at_k=1.0,
+            f1_at_k=1.0,
+            top1_hit=1.0,
+            topk_full_match=1.0,
+        )
+    ])
+
+    summary = format_quality_scorecard(scorecard)
+
+    assert "n_cases=1" in summary
+    assert "mean_f1_at_k=1.000" in summary
+    assert "full_match_rate=1.000" in summary
+
+
 @pytest.mark.asyncio
 async def test_quality_benchmark_cases_recall_expected_memories(tmp_path):
     results = []
@@ -131,6 +153,7 @@ async def test_quality_benchmark_cases_recall_expected_memories(tmp_path):
             assert selected[0] == case.expected_top1
 
     scorecard = build_quality_scorecard(results)
+    print(format_quality_scorecard(scorecard))
     assert scorecard.n_cases == len(quality_benchmark_cases())
     assert scorecard.mean_f1_at_k >= 0.95
     assert scorecard.top1_hit_rate >= 0.95
