@@ -461,15 +461,25 @@ def build_stability_scorecard(
 
 
 def _with_reordered_index(case: RecallEvalCase) -> RecallEvalCase:
-    lines = [line for line in case.index_content.splitlines() if line.strip()]
     return RecallEvalCase(
         case_id=f"{case.case_id}:reordered",
         query=case.query,
-        index_content="\n".join(reversed(lines)) + "\n",
+        index_content=reorder_index_content(case.index_content),
         memory_files=dict(case.memory_files),
         expected_filenames=set(case.expected_filenames),
         expected_top1=case.expected_top1,
     )
+
+
+def reorder_index_content(index_content: str) -> str:
+    lines = index_content.splitlines()
+    entry_lines = [line for line in lines if line.strip()]
+    reversed_entries = list(reversed(entry_lines))
+    entry_iter = iter(reversed_entries)
+    reordered = [next(entry_iter) if line.strip() else line for line in lines]
+    if index_content.endswith("\n"):
+        return "\n".join(reordered) + "\n"
+    return "\n".join(reordered)
 
 
 def _with_irrelevant_noise(case: RecallEvalCase) -> RecallEvalCase:

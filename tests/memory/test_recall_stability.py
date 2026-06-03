@@ -5,6 +5,7 @@ from tests.memory.helpers.recall_eval import (
     compute_stability_metrics,
     format_stability_scorecard,
     quality_benchmark_cases,
+    reorder_index_content,
 )
 
 
@@ -54,3 +55,18 @@ def test_stability_scorecard_summary_includes_case_count_and_key_metrics():
     assert "n_cases=0" in summary
     assert "repeat_consistency_rate=0.000" in summary
     assert "noise_resistance_rate=0.000" in summary
+
+
+def test_reorder_index_content_preserves_blank_lines():
+    index_content = (
+        "- [Alpha](alpha.md) - First memory\n"
+        "\n"
+        "- [Beta](beta.md) - Second memory\n"
+        "\n"
+    )
+
+    reordered = reorder_index_content(index_content)
+
+    assert reordered.count("\n\n") == 2
+    assert "- [Beta](beta.md) - Second memory" in reordered.splitlines()[0]
+    assert "- [Alpha](alpha.md) - First memory" in reordered

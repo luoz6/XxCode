@@ -173,14 +173,19 @@ Accordingly, evaluation tests should fail clearly when the expected
 
 ### 8.1 Fixture Location
 
-The curated benchmark dataset should live under:
+For version 0.1, the curated benchmark dataset should live as inline Python
+case definitions in the test helper module:
+
+- `tests/memory/helpers/recall_eval.py`
+
+This is the current default, not a temporary exception. The corpus is small, and
+keeping it inline keeps the evaluation easy to review beside the deterministic
+selector and scoring code.
+
+If the corpus grows enough to need file-level review, versioning, or external
+generation, migrate the same case contract to:
 
 - `tests/memory/fixtures/recall_eval/`
-
-Phase one may keep the small curated corpus as inline Python structures in the
-test helper module to minimize file I/O and schema overhead. If the corpus grows
-or needs versioned review, migrate those inline cases to files under
-`tests/memory/fixtures/recall_eval/` without changing the case contract.
 
 ### 8.2 Case Shape
 

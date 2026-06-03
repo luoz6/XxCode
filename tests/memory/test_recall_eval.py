@@ -70,6 +70,30 @@ def test_deterministic_selector_reads_available_memories_section():
     asyncio.run(_run())
 
 
+def test_deterministic_selector_returns_empty_when_no_terms_overlap():
+    async def _run():
+        client = DeterministicRecallClient()
+        response = await client.complete(
+            system_prompt="selector",
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        "Query: image rendering canvas\n\n"
+                        "Available memories:\n"
+                        "- [indexed] pandas-style.md: User prefers pandas dataframes\n"
+                        "- [indexed] release-plan.md: Release deadline planning\n"
+                    ),
+                }
+            ],
+            max_tokens=256,
+        )
+
+        assert response == "[]"
+
+    asyncio.run(_run())
+
+
 def test_deterministic_selector_fails_when_manifest_section_missing():
     async def _run():
         client = DeterministicRecallClient()
