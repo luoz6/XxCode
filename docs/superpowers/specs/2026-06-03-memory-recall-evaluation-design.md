@@ -150,6 +150,25 @@ This keeps the benchmark close to the real pipeline:
 - valid-name filtering still happens
 - file loading still happens
 
+### 7.4 Message-Format Coupling
+
+The deterministic selector is intentionally coupled to the current user-message
+shape produced by `select_relevant_memories(...)`.
+
+In the current implementation, the selector prompt embeds the candidate list in
+the user message under an `Available memories:` section followed by manifest
+lines like:
+
+- `- [indexed] filename.md: description`
+
+The deterministic test client must parse that section from the assembled user
+message in order to reconstruct the candidate set. This coupling should be
+explicit in the benchmark because a future prompt-format change could break the
+selector without changing the production recall semantics.
+
+Accordingly, evaluation tests should fail clearly when the expected
+`Available memories:` section cannot be found.
+
 ## 8. Benchmark Dataset Design
 
 ### 8.1 Fixture Location
@@ -164,16 +183,44 @@ Each case should define:
 
 - `case_id`
 - `query`
-- `memory_index`
-- `memory_files`
-- `expected_recall`
-- optional `expected_top1`
-- optional perturbation variants
+- `index_content: str`
+- `memory_files: dict[str, str]`
+- `expected_filenames: list[str]`
+- optional `expected_top1: str`
 
 The benchmark representation may be JSON, YAML, or inline Python structures.
 The important requirement is that it remains human-reviewable and deterministic.
 
-### 8.3 Case Categories
+Field meanings:
+
+- `index_content`: the literal content that will be written to `MEMORY.md`; this
+  aligns with the `load_memory_index()` return shape and avoids splitting
+  terminology between "memory index" and `MEMORY.md`
+- `memory_files`: mapping of `filename -> full markdown file content`; helpers
+  should write these contents directly into the temporary memory directory
+- `expected_filenames`: serialized list form of the gold filename set; helpers
+  may normalize it to a set for order-insensitive metrics
+- `expected_top1`: optional first-result expectation for cases that care about
+  ranking, not just set membership
+
+### 8.3 Perturbation Generation Policy
+
+Version 0.1 perturbations should be generated programmatically by test helpers
+from a baseline case. Baseline cases do not need to define explicit perturbation
+variants.
+
+Programmatic perturbations should cover:
+
+1. `order_stability`: reorder lines inside `index_content`
+2. `noise_resistance`: append irrelevant indexed memories and corresponding
+   memory files
+3. `description_robustness`: rewrite non-target descriptions while preserving
+   the baseline answer expectation
+
+This keeps the fixture schema small and avoids duplicating mostly identical case
+data.
+
+### 8.4 Case Categories
 
 The initial suite should include at least these case categories:
 
@@ -202,7 +249,7 @@ Each quality case should report:
 Definitions:
 
 - `precision_at_k = matched / returned`
-- `recall_at_k = matched / expected`
+- `recall_at_k = matched / expected_count`
 - `f1_at_k = harmonic_mean(precision_at_k, recall_at_k)`
 - `top1_hit = 1.0` when the first selected file matches `expected_top1`,
   otherwise `0.0`
@@ -235,19 +282,29 @@ assessed separately.
 
 ### 9.3 Aggregate Reporting
 
-The suite should expose two aggregate scores instead of one blended score:
+Version 0.1 should expose a scorecard, not a single blended `quality_score` or
+`stability_score`.
 
-- `quality_score`
-- `stability_score`
+Recommended quality scorecard fields:
 
-Recommended version 0.1 formula:
+- `mean_precision_at_k`
+- `mean_recall_at_k`
+- `mean_f1_at_k`
+- `top1_hit_rate`
+- `full_match_rate`
 
-- `quality_score = average(f1_at_k, top1_hit, topk_full_match)`
-- `stability_score = average(repeat_consistency, order_stability,
-  noise_resistance, description_robustness)`
+Recommended stability scorecard fields:
 
-The suite should also retain raw metric fields in the report so future analysis
-does not depend on only two aggregates.
+- `repeat_consistency_rate`
+- `order_stability_rate`
+- `noise_resistance_rate`
+- `description_robustness_rate`
+
+Each scorecard field should be computed as the mean of the corresponding
+per-case metric across the applicable benchmark cases.
+
+The suite should also retain raw per-case metric fields in the report so future
+analysis does not depend only on aggregates.
 
 ## 10. Pass/Fail Policy
 
@@ -260,17 +317,34 @@ Version 0.1 should use conservative deterministic assertions:
 
 - each curated case may assert exact selected filenames when the benchmark is
   meant to lock behavior
-- aggregate suite tests should assert minimum thresholds rather than a single
-  frozen total score
+- aggregate suite tests should assert per-metric thresholds from the scorecard
+  rather than a single frozen total score
 
 This split avoids an overly brittle suite while still making regressions
 actionable.
 
 Recommended initial threshold style:
 
-- `quality_score >= floor`
-- `stability_score == 1.0` for perturbations that should be invariant under the
-  deterministic selector
+- `mean_f1_at_k >= floor`
+- `top1_hit_rate >= floor`
+- `full_match_rate >= floor`
+- `repeat_consistency_rate == 1.0`
+- `order_stability_rate == 1.0`
+- `description_robustness_rate == 1.0` for neutral non-target rewrites
+- `noise_resistance_rate >= floor`
+
+`noise_resistance_rate` should not be forced to `1.0` universally. Adding
+distractors can legitimately affect top-k membership, especially when
+`MAX_RECALLED_MEMORIES` is saturated or when the perturbation is intentionally
+competitive.
+
+Accordingly:
+
+1. default helper-generated noise for invariance checks should use clearly
+   irrelevant distractors
+2. noise thresholds should be case-class-specific and may be lower than `1.0`
+3. competitive-noise scenarios should be treated as explicit benchmark cases,
+   not hidden inside a blanket invariance assumption
 
 Exact floors should be set during TDD once the curated corpus is in place.
 
@@ -296,6 +370,7 @@ Responsibilities:
 - load curated cases
 - materialize a temporary memory directory
 - create the deterministic selector client
+- parse the `Available memories:` section from the assembled user message
 - run recall
 - compute per-case metrics
 - compute aggregate suite metrics
@@ -313,7 +388,7 @@ For each benchmark case:
 
 1. materialize a temporary memory directory
 2. write the case memory files
-3. write the case `MEMORY.md`
+3. write `index_content` to the case `MEMORY.md`
 4. inject the deterministic selector client via `client_factory`
 5. call `recall_memories_for_query(...)`
 6. collect selected filenames
@@ -335,7 +410,8 @@ is invalid.
 Required validation:
 
 - expected filenames must exist in the case memory directory
-- expected filenames must be present in the case `MEMORY.md`
+- expected filenames must be present in `index_content` / the generated
+  `MEMORY.md`
 - perturbation cases must preserve benchmark invariants other than the intended
   perturbation
 
@@ -403,8 +479,8 @@ the recall subsystem.
 This design is successful when the repository gains a deterministic recall
 benchmark that can answer all of the following with concrete numbers:
 
-- what is the current recall quality score
-- what is the current recall stability score
+- what are the current quality metrics
+- what are the current stability metrics
 - which cases are weak
 - whether a code change improved or regressed recall on the fixed corpus
 
