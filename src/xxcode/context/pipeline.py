@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from ..config import Config
 from .auto import should_autocompact
 from .collapse import collapse_messages
-from .micro import microcompact_messages
+from .micro import count_cleared_tool_results, microcompact_messages
 from .snip import snip_messages
 from .tokens import rough_estimate, token_count_with_estimation
 
@@ -113,17 +113,17 @@ class ContextPipeline:
 
         # ── L2: Microcompact ──────────────────────────────────────
         logger.debug("L2 micro: %d tokens still over limit", stats.tokens_after)
-        before_results = _count_tool_results(current)
+        before_cleared = count_cleared_tool_results(current)
+        post_l1_tokens = stats.tokens_after
         current, _edits = microcompact_messages(current, is_cache_cold=True, keep_recent=1)
-        after_results = sum(
-            1 for m in current
-            for b in (m.get("content", []) if isinstance(m.get("content"), list) else [])
-            if b.get("type") == "tool_result"
-        )
-        stats.micro_truncated = before_results
+        after_cleared = count_cleared_tool_results(current)
+        stats.micro_cleared = after_cleared - before_cleared
+        stats.micro_truncated = stats.micro_cleared
         stats.level_reached = 2
 
-        stats.tokens_after = token_count_with_estimation(current)
+        post_l2_tokens = token_count_with_estimation(current)
+        stats.micro_tokens_freed = post_l1_tokens - post_l2_tokens
+        stats.tokens_after = post_l2_tokens
         if stats.tokens_after <= soft_limit:
             return current, stats
 
