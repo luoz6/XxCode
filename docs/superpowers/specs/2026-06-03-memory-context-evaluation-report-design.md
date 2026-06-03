@@ -102,6 +102,29 @@ Version 0.1 should define a test-local report model under:
 
 - `tests/memory/helpers/report_eval.py`
 
+The real report builder must be async and must accept filesystem paths because
+four source scorecards need temporary directories:
+
+```python
+async def build_unified_report(
+    work_dir: Path,
+    *,
+    context_cwd: Path | None = None,
+) -> UnifiedEvaluationReport
+```
+
+Path contract:
+
+- `work_dir` is the report builder's temporary workspace
+- recall quality cases use subdirectories under `work_dir / "recall-quality"`
+- recall stability cases use subdirectories under `work_dir / "recall-stability"`
+- generated index cases use subdirectories under `work_dir / "index"`
+- context memory files use subdirectories under `work_dir / "context-memory"`
+- `context_cwd` defaults to `work_dir / "context-cwd"` when not provided
+
+Tests should call this builder with `tmp_path` from pytest and should use
+`@pytest.mark.asyncio`.
+
 Recommended dataclasses:
 
 ```python
@@ -127,14 +150,15 @@ class MemoryEvaluationSection:
 @dataclass(frozen=True)
 class UnifiedEvaluationReport:
     memory: MemoryEvaluationSection
-    context: ContextEvalScorecard
+    context_engineering: ContextEvalScorecard
     checks: list[MetricCheck]
 ```
 
 The semantic shape should remain:
 
 - one memory section containing the five memory scorecards
-- one context section containing the context engineering scorecard
+- one `context_engineering` section containing the context engineering semantic
+  scorecard
 - one flat list of metric threshold checks
 
 ## 8. Scorecard Sources
@@ -143,21 +167,21 @@ The report should build scorecards by reusing existing deterministic benchmark
 functions:
 
 - recall quality from `quality_benchmark_cases()`
-- recall stability from `quality_benchmark_cases()`, matching the current
-  stability tests
+- recall stability also from `quality_benchmark_cases()`; stability deliberately
+  reuses the same curated recall cases and applies perturbations through
+  `compute_stability_metrics(case, base_dir)`
 - index organization from `generated_index_cases()` for the primary generated
   index scorecard
 - extraction quality from `extraction_quality_cases()`
 - effectiveness from `effectiveness_benchmark_cases()`
 - context engineering from `semantic_benchmark_cases()`
 
-If a source test already includes both semantic and stability benchmark cases,
-the report should either:
-
-1. use the same combined case list as the source scorecard test, or
-2. expose separate context sections in a deferred version.
-
-Version 0.1 should keep one context scorecard section named `context`.
+Context engineering has both `semantic_benchmark_cases()` and
+`stability_benchmark_cases()`. Version 0.1 of the unified report uses only
+`semantic_benchmark_cases()` and stores that scorecard in the
+`context_engineering` field. Context stability should remain covered by its
+dedicated tests until a deferred report version adds a separate
+`context_stability` section.
 
 ## 9. Threshold Contract
 
@@ -170,18 +194,41 @@ Threshold checks should support:
 - `<=` for error-rate ceilings
 - `==` only for metrics that must be exactly stable
 
-Recommended initial threshold categories:
+Version 0.1 should use a small explicit threshold registry. Each registry entry
+must map `(section, metric)` to a concrete scorecard field. The implementation
+should not use open-ended `getattr(scorecard, metric)` lookups against arbitrary
+metric names. A missing registry entry is a setup error and should raise
+`ValueError`.
 
-- recall quality floors
-- recall stability exactness or floors
-- index organization coverage and error-rate ceilings
-- extraction validity and coverage floors
-- effectiveness coverage and absence floors
-- context snapshot/content/budget floors
+Recommended registry shape:
 
-The report should not invent thresholds for every available scorecard field in
-version 0.1. It should check only the metrics that are useful as high-signal CI
-gates. Raw scorecards remain available for detailed inspection.
+```python
+THRESHOLDS = [
+    ("memory.recall_quality", "mean_f1_at_k", ">=", 0.90),
+    ("memory.recall_quality", "full_match_rate", ">=", 0.90),
+    ("memory.recall_stability", "repeat_consistency_rate", "==", 1.00),
+    ("memory.recall_stability", "order_stability_rate", "==", 1.00),
+    ("memory.recall_stability", "description_robustness_rate", "==", 1.00),
+    ("memory.index", "mean_coverage_rate", ">=", 0.90),
+    ("memory.index", "mean_stale_reference_rate", "<=", 0.00),
+    ("memory.index", "mean_duplicate_reference_rate", "<=", 0.00),
+    ("memory.extraction", "mean_write_validity_rate", ">=", 0.90),
+    ("memory.extraction", "mean_expected_fact_coverage", ">=", 0.90),
+    ("memory.effectiveness", "memory_lift_rate", ">=", 1.00),
+    ("memory.effectiveness", "mean_memory_lift_delta", ">=", 0.50),
+    ("context.engineering", "required_content_hit_rate", ">=", 0.90),
+    ("context.engineering", "budget_pass_rate", ">=", 1.00),
+    ("context.engineering", "snapshot_validity_rate", ">=", 1.00),
+]
+```
+
+These thresholds intentionally do not require all risk-case detection metrics to
+be `1.0`. Some existing extraction and effectiveness benchmarks include
+prewritten risk cases whose purpose is to prove that the evaluator detects bad
+outputs, not that the simulated output is healthy.
+
+Raw scorecards remain available for detailed inspection even when a metric is
+not part of the threshold registry.
 
 ## 10. Pass/Fail Semantics
 
@@ -202,17 +249,20 @@ passing reports.
 
 The formatted report should be stable and human-readable.
 
-Recommended format:
+The final report text should be Chinese because the primary review workflow for
+this evaluation module is Chinese.
+
+Recommended success format:
 
 ```text
-unified-eval passed=True failed=0
-memory.recall_quality n_cases=6 mean_f1_at_k=0.900 full_match_rate=0.667
-memory.recall_stability n_cases=6 repeat_consistency_rate=1.000 order_stability_rate=1.000
-memory.index n_cases=3 mean_coverage_rate=1.000 mean_stale_reference_rate=0.000
-memory.extraction n_cases=7 mean_write_validity_rate=1.000 mean_expected_fact_coverage=0.857
-memory.effectiveness n_cases=7 mean_answer_fact_coverage=0.857 mean_memory_fact_usage_rate=0.800
-context.engineering n_cases=3 required_content_hit_rate=1.000 budget_pass_rate=1.000
-checks passed=12 total=12
+统一评测报告 通过=True 失败项=0
+记忆.召回质量 n_cases=6 mean_f1_at_k=1.000 full_match_rate=1.000
+记忆.召回稳定性 n_cases=6 repeat_consistency_rate=1.000 order_stability_rate=1.000
+记忆.索引组织 n_cases=2 mean_coverage_rate=1.000 mean_stale_reference_rate=0.000
+记忆.提取质量 n_cases=7 mean_write_validity_rate=1.000 mean_expected_fact_coverage=0.929
+记忆.端到端有效性 n_cases=7 mean_answer_fact_coverage=0.571 memory_lift_rate=1.000
+上下文.工程质量 n_cases=3 required_content_hit_rate=1.000 budget_pass_rate=1.000
+阈值检查 passed=15 total=15
 ```
 
 The renderer should include:
@@ -225,7 +275,15 @@ The renderer should include:
 If failures exist, the renderer should include compact failed check details:
 
 ```text
-failed memory.recall_quality.mean_f1_at_k actual=0.700 expected >= 0.800
+统一评测报告 通过=False 失败项=1
+记忆.召回质量 n_cases=6 mean_f1_at_k=0.700 full_match_rate=1.000
+记忆.召回稳定性 n_cases=6 repeat_consistency_rate=1.000 order_stability_rate=1.000
+记忆.索引组织 n_cases=2 mean_coverage_rate=1.000 mean_stale_reference_rate=0.000
+记忆.提取质量 n_cases=7 mean_write_validity_rate=1.000 mean_expected_fact_coverage=0.929
+记忆.端到端有效性 n_cases=7 mean_answer_fact_coverage=0.571 memory_lift_rate=1.000
+上下文.工程质量 n_cases=3 required_content_hit_rate=1.000 budget_pass_rate=1.000
+阈值检查 passed=14 total=15
+失败 memory.recall_quality.mean_f1_at_k actual=0.700 expected >= 0.900
 ```
 
 The renderer should avoid multiline dumps of raw dataclasses because pytest
@@ -235,26 +293,30 @@ failure output becomes hard to scan.
 
 For each report build:
 
-1. run memory recall quality benchmark cases
-2. build `QualityScorecard`
-3. run memory recall stability benchmark cases
-4. build `StabilityScorecard`
-5. run index organization benchmark cases
-6. build `IndexOrganizationScorecard`
-7. run extraction benchmark cases
-8. build `ExtractionScorecard`
-9. run effectiveness benchmark cases
-10. build `EffectivenessScorecard`
-11. run context engineering benchmark cases
-12. build `ContextEvalScorecard`
-13. validate that no scorecard has `n_cases == 0`
-14. evaluate threshold checks
-15. return `UnifiedEvaluationReport`
-16. render a compact summary for pytest output
+1. receive `work_dir: Path` and optional `context_cwd: Path | None`
+2. create deterministic subdirectories under `work_dir`
+3. run memory recall quality benchmark cases with `run_recall_case(case, memory_dir)`
+4. build `QualityScorecard`
+5. run memory recall stability benchmark cases with
+   `compute_stability_metrics(case, base_dir)`
+6. build `StabilityScorecard`
+7. run generated index organization benchmark cases with
+   `compute_generated_index_metrics(case, memory_dir)`
+8. build `IndexOrganizationScorecard`
+9. run extraction benchmark cases with `compute_extraction_metrics(case)`
+10. build `ExtractionScorecard`
+11. run effectiveness benchmark cases with `compute_effectiveness_metrics(case)`
+12. build `EffectivenessScorecard`
+13. run context engineering semantic benchmark cases with
+    `run_context_case(case, memory_dir=context_memory_dir, cwd=context_case_cwd)`
+14. build `ContextEvalScorecard`
+15. validate that no scorecard has `n_cases == 0`
+16. evaluate threshold checks through the explicit metric registry
+17. return `UnifiedEvaluationReport`
+18. render a compact Chinese summary for pytest output
 
-Async benchmark paths should remain async where the existing helpers require
-them. The report builder may be async in version 0.1 if that avoids hiding
-event-loop behavior.
+The report builder must be async in version 0.1 because recall quality, recall
+stability, and context case execution are async.
 
 ## 13. Error Handling And Diagnostics
 
@@ -262,7 +324,8 @@ The report builder should fail loudly when:
 
 - a required scorecard cannot be built
 - a required benchmark section has zero cases
-- a threshold references a missing metric
+- a threshold references a metric that is absent from the explicit registry
+- a registry entry points at a scorecard field that does not exist
 - a threshold operator is unsupported
 
 Failure messages should include:
@@ -286,10 +349,11 @@ Recommended order:
 4. implement scorecard validation
 5. write a failing test for report shape using small synthetic scorecards
 6. implement report dataclasses and builder helpers
-7. write a failing integration test that builds the real unified report
+7. write a failing async integration test that calls
+   `build_unified_report(tmp_path)`
 8. implement the real benchmark aggregation
-9. write a failing renderer test
-10. implement stable report formatting
+9. write a failing Chinese renderer test
+10. implement stable Chinese report formatting
 11. run memory and context evaluation tests together
 
 Tests should assert structured fields first and formatted strings second.
