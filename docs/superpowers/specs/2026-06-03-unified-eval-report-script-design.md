@@ -98,6 +98,10 @@ py -3.11 scripts/run_unified_eval_report.py
 This script is expected to be run from the repository root
 `F:\agent\XxCode\XxCode`.
 
+The script should not assume `PYTHONPATH` is already configured. It should
+bootstrap imports by inserting the repository root into `sys.path` before
+importing `tests.memory.helpers.report_eval`.
+
 ### 7.2 Behavior
 
 On each run the script should:
@@ -184,16 +188,22 @@ async def run_report(output_dir: Path, work_dir: Path, keep: int) -> int
 def main() -> int
 ```
 
+`main()` should call `asyncio.run(run_report(output_dir, work_dir, keep))` so
+the script can drive the existing async `build_unified_report` helper safely from a normal shell
+entry point.
+
 Recommended data flow:
 
 1. parse arguments
-2. resolve paths relative to repository root
-3. call `build_unified_report(work_dir)`
-4. call `format_unified_report(report)`
-5. print report text
-6. write report file
-7. prune old files
-8. return exit code
+2. resolve the repository root from `__file__`
+3. prepend that repository root to `sys.path`
+4. resolve paths relative to repository root
+5. call `build_unified_report(work_dir)`
+6. call `format_unified_report(report)`
+7. print report text
+8. write report file
+9. prune old files
+10. return exit code
 
 The script should keep business logic thin and delegate evaluation semantics to
 `tests/memory/helpers/report_eval.py`.
@@ -212,6 +222,12 @@ Recommended tests:
 
 Version 0.1 does not need a subprocess-heavy end-to-end shell test if the same
 behavior can be covered by calling script functions directly from pytest.
+
+At the current benchmark corpus size, script runtime is acceptable for daily
+local use. On this machine, the direct unified report smoke run completed in
+roughly 3 seconds, while the broader memory/context regression run completed in
+under 5 seconds. Version 0.1 therefore does not need caching or incremental
+execution.
 
 Recommended test file:
 
