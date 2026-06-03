@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -10,8 +12,17 @@ from xxcode.context.tokens import token_count_with_estimation
 from xxcode.memory.injection import (
     MEMORY_INDEX_SOURCE,
     build_memory_index_message,
+    build_recalled_memories_message,
     strip_memory_context_messages,
 )
+from xxcode.memory.recall import MAX_RECALLED_MEMORIES, recall_memories_for_query
+
+
+_AVAILABLE_MEMORIES_HEADER = "Available memories:"
+_INDEXED_MANIFEST_RE = re.compile(
+    r"^- \[indexed\]\s+(?P<filename>[^\s:]+\.md):\s*(?P<description>.*)$"
+)
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 
 @dataclass(frozen=True)
@@ -61,6 +72,23 @@ class ContextSnapshot:
     compression_diagnostics: CompressionDiagnostics
 
 
+class DeterministicRecallClient:
+    async def complete(
+        self,
+        system_prompt: str = "",
+        messages: list[dict] | None = None,
+        *,
+        max_tokens: int = 1024,
+        tools: list[dict] | None = None,
+    ) -> str:
+        del system_prompt, max_tokens, tools
+        user_message = _first_user_text(messages or [])
+        query = _extract_query(user_message)
+        candidates = _extract_candidates(user_message)
+        selected = _rank_candidates(query, candidates)
+        return json.dumps(selected)
+
+
 def render_flattened_snapshot(system_prompt: str, prepared_messages: list[dict[str, Any]]) -> str:
     parts = [f"[SYSTEM PROMPT]\n{system_prompt}"]
     for message in prepared_messages:
@@ -92,6 +120,15 @@ async def run_context_case(
     index_injected = index_message is not None
     if index_message is not None:
         _insert_before_current_user_message(prepared_messages, index_message)
+
+    recalled = await _run_deterministic_recall(
+        query=_current_user_query(prepared_messages),
+        memory_dir=memory_dir,
+    )
+    recalled_message = build_recalled_memories_message(recalled)
+    if recalled_message is not None:
+        _insert_before_current_user_message(prepared_messages, recalled_message)
+
     flattened = render_flattened_snapshot(system_prompt, prepared_messages)
     token_counts = {
         "prepared_messages_tokens": token_count_with_estimation(prepared_messages),
@@ -106,8 +143,8 @@ async def run_context_case(
         token_counts=token_counts,
         recall_diagnostics=RecallDiagnostics(
             index_injected=index_injected,
-            recalled_count=0,
-            recall_empty=True,
+            recalled_count=len(recalled),
+            recall_empty=(len(recalled) == 0),
         ),
         compression_diagnostics=CompressionDiagnostics(
             compression_used=False,
@@ -145,6 +182,57 @@ def _build_config(cwd: Path, memory_dir: Path) -> Config:
     )
 
 
+def _first_user_text(messages: list[dict]) -> str:
+    for message in messages:
+        if message.get("role") == "user":
+            content = message.get("content", "")
+            if isinstance(content, str):
+                return content
+    return ""
+
+
+def _extract_query(user_message: str) -> str:
+    for line in user_message.splitlines():
+        if line.startswith("Query:"):
+            return line.removeprefix("Query:").strip()
+    return ""
+
+
+def _extract_candidates(user_message: str) -> list[tuple[str, str]]:
+    lines = user_message.splitlines()
+    try:
+        start = lines.index(_AVAILABLE_MEMORIES_HEADER) + 1
+    except ValueError as exc:
+        raise ValueError("Available memories section not found") from exc
+
+    candidates: list[tuple[str, str]] = []
+    for line in lines[start:]:
+        if not line.strip():
+            break
+        match = _INDEXED_MANIFEST_RE.match(line.strip())
+        if match:
+            candidates.append((match.group("filename"), match.group("description")))
+    return candidates
+
+
+def _tokens(text: str) -> set[str]:
+    return set(_TOKEN_RE.findall(text.lower()))
+
+
+def _rank_candidates(query: str, candidates: list[tuple[str, str]]) -> list[str]:
+    query_tokens = _tokens(query)
+    ranked: list[tuple[int, str]] = []
+    for filename, description in candidates:
+        filename_tokens = _tokens(Path(filename).stem.replace("-", " "))
+        description_tokens = _tokens(description)
+        score = len(query_tokens & filename_tokens)
+        score += 2 * len(query_tokens & description_tokens)
+        if score > 0:
+            ranked.append((-score, filename))
+    ranked.sort(key=lambda item: (item[0], item[1]))
+    return [filename for _score, filename in ranked[:MAX_RECALLED_MEMORIES]]
+
+
 def _render_message_text(message: dict[str, Any]) -> str:
     content = message.get("content", [])
     if isinstance(content, str):
@@ -161,6 +249,32 @@ def _render_message_text(message: dict[str, Any]) -> str:
         elif block_type == "tool_use":
             parts.append(f"[tool_use:{block.get('name', '')}]")
     return "\n".join(part for part in parts if part)
+
+
+async def _run_deterministic_recall(query: str, memory_dir: Path):
+    async def _client_factory():
+        return DeterministicRecallClient()
+
+    if not query:
+        return []
+
+    return await recall_memories_for_query(
+        query=query,
+        memory_dir=memory_dir,
+        client_factory=_client_factory,
+    )
+
+
+def _current_user_query(messages: list[dict[str, Any]]) -> str:
+    for message in reversed(messages):
+        if message.get("role") != "user":
+            continue
+        content = message.get("content", [])
+        if isinstance(content, list):
+            for block in content:
+                if block.get("type") == "text" and block.get("text", "").strip():
+                    return block["text"]
+    return ""
 
 
 def _insert_before_current_user_message(messages: list[dict[str, Any]], message: dict[str, Any]) -> None:
