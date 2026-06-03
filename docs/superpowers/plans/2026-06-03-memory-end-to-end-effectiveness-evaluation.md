@@ -355,28 +355,6 @@ def _safe_div(numerator: int, denominator: int, empty_value: float) -> float:
 
 def _tokens(text: str) -> set[str]:
     return set(_TOKEN_RE.findall(text.lower()))
-
-
-def _content_tokens(text: str) -> set[str]:
-    stopwords = {
-        "a",
-        "an",
-        "and",
-        "before",
-        "for",
-        "how",
-        "in",
-        "of",
-        "should",
-        "the",
-        "to",
-        "what",
-    }
-    return {
-        token
-        for token in _tokens(text)
-        if len(token) >= 3 and token not in stopwords
-    }
 ```
 
 - [ ] **Step 4: Run Task 1 tests to verify they pass**
@@ -491,12 +469,12 @@ Replace `_deterministic_assistant(...)` in `XxCode/tests/memory/helpers/effectiv
 
 ```python
 def _deterministic_assistant(query: str, recalled_memories: dict[str, str]) -> str:
-    query_tokens = _content_tokens(query)
+    query_tokens = _tokens(query)
     ranked: list[tuple[int, str, str]] = []
     for filename, memory_text in recalled_memories.items():
-        memory_tokens = _content_tokens(memory_text)
-        # Phase one uses lexical overlap only. Stopwords and very short tokens
-        # are filtered so unrelated memories do not match on words like "in".
+        memory_tokens = _tokens(memory_text)
+        # Phase one uses single-token lexical overlap. False positives from
+        # common words are a known limitation controlled by the curated corpus.
         score = len(query_tokens & memory_tokens)
         if score > 0:
             ranked.append((-score, filename, memory_text.strip()))
