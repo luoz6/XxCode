@@ -486,6 +486,11 @@ Replace the L4 section in `src/xxcode/context/pipeline.py` with:
 
 ```python
         post_l3_tokens = stats.tokens_after
+        failure_count = (
+            int(state.consecutive_autocompact_failures)
+            if state is not None and hasattr(state, "consecutive_autocompact_failures")
+            else self._consecutive_autocompact_failures
+        )
         l1_char_tokens_freed = stats.snip_removed // 4
         if not should_autocompact(
             current_tokens=stats.tokens_after,
@@ -624,7 +629,6 @@ async def test_l4_failure_still_marks_attempt_but_no_token_gain(tmp_path, monkey
     assert state.consecutive_autocompact_failures == 1
 ```
 
-- [ ] **Step 2: Run the L4 suppression and failure tests to verify they fail**
 - [ ] **Step 2: Run the L4 suppression and failure tests to verify the Task 4 code already satisfies them**
 
 Run:
