@@ -285,7 +285,7 @@ Each stability case should report:
 Definitions:
 
 - `repeat_consistency`: exact selected list equality across repeated runs of the
-  same case
+  same case; version 0.1 defines the repeat count as `N = 2`
 - `order_stability`: selected set equality after reordering `MEMORY.md` lines
 - `noise_resistance`: selected set preservation after adding irrelevant indexed
   memories
@@ -302,6 +302,7 @@ Version 0.1 should expose a scorecard, not a single blended `quality_score` or
 
 Recommended quality scorecard fields:
 
+- `n_cases`
 - `mean_precision_at_k`
 - `mean_recall_at_k`
 - `mean_f1_at_k`
@@ -310,12 +311,16 @@ Recommended quality scorecard fields:
 
 Recommended stability scorecard fields:
 
+- `n_cases`
 - `repeat_consistency_rate`
 - `order_stability_rate`
 - `noise_resistance_rate`
 - `description_robustness_rate`
 
-Each scorecard field should be computed as the mean of the corresponding
+Each scorecard should include its own `n_cases` value so the aggregate metrics
+are interpretable at a glance.
+
+Each scorecard metric field should be computed as the mean of the corresponding
 per-case metric across the applicable benchmark cases.
 
 The suite should also retain raw per-case metric fields in the report so future
@@ -427,6 +432,8 @@ Required validation:
 - expected filenames must exist in the case memory directory
 - expected filenames must be present in `index_content` / the generated
   `MEMORY.md`
+- every filename referenced by `index_content` must have a corresponding key in
+  `memory_files`
 - perturbation cases must preserve benchmark invariants other than the intended
   perturbation
 
