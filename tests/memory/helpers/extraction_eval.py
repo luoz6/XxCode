@@ -112,6 +112,7 @@ def compute_extraction_metrics(case: ExtractionEvalCase) -> ExtractionMetrics:
         case.existing_memory_files,
         case.candidate_memory_files,
     )
+    _validate_candidate_expectations(case, operations)
     parsed, invalid_filenames = _parse_candidate_files(case)
     parsed_existing, _existing_invalid_filenames = _parse_memory_files(
         case.existing_memory_files,
@@ -137,6 +138,15 @@ def compute_extraction_metrics(case: ExtractionEvalCase) -> ExtractionMetrics:
             len(case.forbidden_facts),
             0.0,
         )
+    duplicate_control_rate = _duplicate_control_rate(
+        case,
+        operations,
+        candidate_text_by_file,
+    )
+    conflict_update_correctness = _conflict_update_correctness(
+        case,
+        list(candidate_text_by_file.values()),
+    )
 
     valid_count = len(parsed)
     candidate_count = len(case.candidate_memory_files)
@@ -178,8 +188,8 @@ def compute_extraction_metrics(case: ExtractionEvalCase) -> ExtractionMetrics:
         grounding_rate=grounding_rate,
         noise_suppression_rate=noise_suppression_rate,
         forbidden_fact_leak_count=len(leaked_forbidden_facts),
-        duplicate_control_rate=None,
-        conflict_update_correctness=None,
+        duplicate_control_rate=duplicate_control_rate,
+        conflict_update_correctness=conflict_update_correctness,
         invalid_candidate_filenames=invalid_filenames,
         missing_expected_facts=missing_expected_facts,
         leaked_forbidden_facts=leaked_forbidden_facts,
@@ -242,6 +252,24 @@ def _validate_case(case: ExtractionEvalCase) -> None:
         raise ValueError(
             f"{case.case_id}: expected_deleted_filenames missing from existing "
             f"memory files: {sorted(missing_delete_files)}"
+        )
+
+
+def _validate_candidate_expectations(
+    case: ExtractionEvalCase,
+    operations: OperationClassification,
+) -> None:
+    missing_updates = case.expected_updated_filenames - operations.updated_filenames
+    if missing_updates:
+        raise ValueError(
+            f"{case.case_id}: expected updated files were not updated: "
+            f"{sorted(missing_updates)}"
+        )
+    missing_deletes = case.expected_deleted_filenames - operations.deleted_filenames
+    if missing_deletes:
+        raise ValueError(
+            f"{case.case_id}: expected deleted files were not deleted: "
+            f"{sorted(missing_deletes)}"
         )
 
 
@@ -329,6 +357,35 @@ def _grounding_rate(case: ExtractionEvalCase) -> float:
         ):
             grounded += 1
     return _safe_div(grounded, len(claims), 1.0)
+
+
+def _duplicate_control_rate(
+    case: ExtractionEvalCase,
+    operations: OperationClassification,
+    candidate_text_by_file: dict[str, str],
+) -> float | None:
+    if not case.duplicate_facts:
+        return None
+    created_texts = [
+        candidate_text_by_file.get(filename, "")
+        for filename in operations.created_filenames
+    ]
+    leaked_duplicates = _represented_facts(case.duplicate_facts, created_texts)
+    return 0.0 if leaked_duplicates else 1.0
+
+
+def _conflict_update_correctness(
+    case: ExtractionEvalCase,
+    candidate_texts: list[str],
+) -> float | None:
+    if not case.expected_latest_facts and not case.obsolete_facts:
+        return None
+    latest_present = (
+        _represented_facts(case.expected_latest_facts, candidate_texts)
+        == case.expected_latest_facts
+    )
+    obsolete_present = bool(_represented_facts(case.obsolete_facts, candidate_texts))
+    return 1.0 if latest_present and not obsolete_present else 0.0
 
 
 def _safe_div(numerator: int, denominator: int, empty_value: float) -> float:

@@ -228,3 +228,175 @@ def test_empty_forbidden_facts_excludes_noise_suppression_rate():
 
     assert metrics.noise_suppression_rate is None
     assert metrics.forbidden_fact_leak_count == 0
+
+
+def test_duplicate_control_checks_only_newly_created_files():
+    existing = memory_file(
+        "user",
+        "Existing Style",
+        "User prefers snake_case",
+        "User prefers snake_case in Python tests.",
+    )
+    case = ExtractionEvalCase(
+        case_id="duplicate-created",
+        conversation=[
+            {"role": "user", "content": "I prefer snake_case in Python tests."},
+        ],
+        existing_memory_files={"existing-style.md": existing},
+        candidate_memory_files={
+            "existing-style.md": existing,
+            "duplicate-style.md": memory_file(
+                "user",
+                "Duplicate Style",
+                "User prefers snake_case",
+                "User prefers snake_case in Python tests.",
+            ),
+        },
+        expected_memory_filenames={"existing-style.md"},
+        expected_facts={"user prefers snake_case"},
+        expected_types={"existing-style.md": "user"},
+        duplicate_facts={"user prefers snake_case"},
+    )
+
+    metrics = compute_extraction_metrics(case)
+
+    assert metrics.duplicate_control_rate == 0.0
+
+
+def test_duplicate_control_passes_when_duplicate_fact_is_not_in_created_file():
+    existing = memory_file(
+        "user",
+        "Existing Style",
+        "User prefers snake_case",
+        "User prefers snake_case in Python tests.",
+    )
+    case = ExtractionEvalCase(
+        case_id="duplicate-not-created",
+        conversation=[
+            {"role": "user", "content": "I prefer snake_case in Python tests."},
+        ],
+        existing_memory_files={"existing-style.md": existing},
+        candidate_memory_files={"existing-style.md": existing},
+        expected_memory_filenames={"existing-style.md"},
+        expected_facts={"user prefers snake_case"},
+        expected_types={"existing-style.md": "user"},
+        duplicate_facts={"user prefers snake_case"},
+    )
+
+    metrics = compute_extraction_metrics(case)
+
+    assert metrics.duplicate_control_rate == 1.0
+
+
+def test_conflict_update_correctness_requires_latest_and_no_obsolete_fact():
+    case = ExtractionEvalCase(
+        case_id="conflict-updated",
+        conversation=[
+            {"role": "user", "content": "Actually use pathlib instead of os.path."},
+        ],
+        existing_memory_files={
+            "path-style.md": memory_file(
+                "feedback",
+                "Path Style",
+                "Prefer os.path",
+                "Prefer os.path for path manipulation.",
+            ),
+        },
+        candidate_memory_files={
+            "path-style.md": memory_file(
+                "feedback",
+                "Path Style",
+                "Prefer pathlib",
+                "Prefer pathlib for path manipulation.",
+            ),
+        },
+        expected_memory_filenames={"path-style.md"},
+        expected_facts={"prefer pathlib"},
+        expected_types={"path-style.md": "feedback"},
+        expected_latest_facts={"prefer pathlib"},
+        obsolete_facts={"prefer os path"},
+        expected_updated_filenames={"path-style.md"},
+    )
+
+    metrics = compute_extraction_metrics(case)
+
+    assert metrics.conflict_update_correctness == 1.0
+
+
+def test_conflict_update_correctness_fails_when_obsolete_fact_remains():
+    case = ExtractionEvalCase(
+        case_id="conflict-obsolete-remains",
+        conversation=[
+            {"role": "user", "content": "Actually use pathlib instead of os.path."},
+        ],
+        existing_memory_files={
+            "path-style.md": memory_file(
+                "feedback",
+                "Path Style",
+                "Prefer os.path",
+                "Prefer os.path for path manipulation.",
+            ),
+        },
+        candidate_memory_files={
+            "path-style.md": memory_file(
+                "feedback",
+                "Path Style",
+                "Prefer pathlib but keep os.path",
+                "Prefer pathlib now. Previously prefer os.path.",
+            ),
+        },
+        expected_memory_filenames={"path-style.md"},
+        expected_facts={"prefer pathlib"},
+        expected_types={"path-style.md": "feedback"},
+        expected_latest_facts={"prefer pathlib"},
+        obsolete_facts={"prefer os path"},
+        expected_updated_filenames={"path-style.md"},
+    )
+
+    metrics = compute_extraction_metrics(case)
+
+    assert metrics.conflict_update_correctness == 0.0
+
+
+def test_expected_updated_filename_must_be_classified_as_updated():
+    unchanged = memory_file(
+        "project",
+        "Project Rule",
+        "Always run tests",
+        "Always run tests before completion.",
+    )
+    case = ExtractionEvalCase(
+        case_id="missing-update",
+        conversation=[],
+        existing_memory_files={"project-rule.md": unchanged},
+        candidate_memory_files={"project-rule.md": unchanged},
+        expected_memory_filenames={"project-rule.md"},
+        expected_facts=set(),
+        expected_types={"project-rule.md": "project"},
+        expected_updated_filenames={"project-rule.md"},
+    )
+
+    with pytest.raises(ValueError, match="expected updated files were not updated"):
+        compute_extraction_metrics(case)
+
+
+def test_expected_deleted_filename_must_be_classified_as_deleted():
+    existing = memory_file(
+        "project",
+        "Temporary Note",
+        "Temporary debug note",
+        "Temporary debug note for today.",
+    )
+    case = ExtractionEvalCase(
+        case_id="missing-delete",
+        conversation=[],
+        existing_memory_files={"temporary-note.md": existing},
+        candidate_memory_files={"temporary-note.md": existing},
+        expected_memory_filenames=set(),
+        expected_facts=set(),
+        expected_types={},
+        expected_deleted_filenames={"temporary-note.md"},
+    )
+
+    with pytest.raises(ValueError, match="expected deleted files were not deleted"):
+        compute_extraction_metrics(case)
