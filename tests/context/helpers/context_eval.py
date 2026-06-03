@@ -222,6 +222,10 @@ def semantic_benchmark_cases() -> list[ContextEvalCase]:
     return [_simple_semantic_case(), _memory_semantic_case(), _compression_semantic_case()]
 
 
+def stability_benchmark_cases() -> list[ContextEvalCase]:
+    return [_memory_semantic_case(), _compression_semantic_case()]
+
+
 async def run_context_case(
     case: ContextEvalCase,
     *,
@@ -573,6 +577,70 @@ def _compression_semantic_case() -> ContextEvalCase:
             summary_injected=False,
         ),
         budget_expectation={"soft_limit_tokens": 200, "hard_limit_tokens": 400},
+    )
+
+
+def _with_memory_index_reordered(case: ContextEvalCase) -> ContextEvalCase:
+    lines = [line for line in case.memory_index_content.splitlines() if line.strip()]
+    return ContextEvalCase(
+        case_id=f"{case.case_id}:index-reordered",
+        scenario=case.scenario,
+        cwd_files=dict(case.cwd_files),
+        messages=list(case.messages),
+        memory_index_content="\n".join(reversed(lines)) + ("\n" if lines else ""),
+        memory_files=dict(case.memory_files),
+        target_turn_index=case.target_turn_index,
+        expected_compression_level=case.expected_compression_level,
+        expected_present=list(case.expected_present),
+        expected_absent=list(case.expected_absent),
+        expected_recent_present=list(case.expected_recent_present),
+        expected_stale_absent=list(case.expected_stale_absent),
+        expected_order=list(case.expected_order),
+        required_sections=list(case.required_sections),
+        expected_recall_diagnostics=case.expected_recall_diagnostics,
+        expected_compression_diagnostics=case.expected_compression_diagnostics,
+        budget_expectation=dict(case.budget_expectation),
+    )
+
+
+# Note: this perturbation intentionally normalizes away blank lines while
+# reordering semantic entries. That changes formatting but not the parsed index
+# meaning, which is the stability property this phase-one case is asserting.
+
+
+def _with_stale_history_noise(case: ContextEvalCase) -> ContextEvalCase:
+    noisy_messages = [
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Old unrelated deployment archive note."}],
+        },
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": "Historical packaging archive reminder."}],
+        },
+    ] + list(case.messages)
+    return ContextEvalCase(
+        case_id=f"{case.case_id}:stale-noise",
+        scenario=case.scenario,
+        cwd_files=dict(case.cwd_files),
+        messages=noisy_messages,
+        memory_index_content=case.memory_index_content,
+        memory_files=dict(case.memory_files),
+        target_turn_index=case.target_turn_index + 2,
+        expected_compression_level=case.expected_compression_level,
+        expected_present=list(case.expected_present),
+        expected_absent=list(case.expected_absent),
+        expected_recent_present=list(case.expected_recent_present),
+        expected_stale_absent=list(case.expected_stale_absent)
+        + [
+            "Old unrelated deployment archive note.",
+            "Historical packaging archive reminder.",
+        ],
+        expected_order=list(case.expected_order),
+        required_sections=list(case.required_sections),
+        expected_recall_diagnostics=case.expected_recall_diagnostics,
+        expected_compression_diagnostics=case.expected_compression_diagnostics,
+        budget_expectation=dict(case.budget_expectation),
     )
 
 

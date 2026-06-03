@@ -321,3 +321,48 @@ async def test_semantic_benchmark_cases_produce_passing_scorecard(tmp_path):
     assert scorecard.forbidden_content_absence_rate == 1.0
     assert scorecard.budget_pass_rate == 1.0
     assert scorecard.snapshot_validity_rate == 1.0
+
+
+def test_context_eval_scorecard_summary_includes_key_rates():
+    summary = format_context_eval_scorecard(
+        build_context_eval_scorecard([
+            ContextEvalMetrics(
+                case_id="demo",
+                required_content_hit=1.0,
+                required_order_pass=1.0,
+                section_presence_pass=1.0,
+                recent_context_preserved=1.0,
+                stale_content_exclusion_pass=1.0,
+                forbidden_content_absence_pass=1.0,
+                budget_pass=1.0,
+                recall_activation_pass=1.0,
+                compression_activation_pass=1.0,
+                snapshot_validity_pass=1.0,
+            )
+        ])
+    )
+
+    assert "n_cases=1" in summary
+    assert "required_content_hit_rate=1.000" in summary
+    assert "budget_pass_rate=1.000" in summary
+
+
+def test_optional_metric_aggregates_skip_none_values():
+    scorecard = build_context_eval_scorecard([
+        ContextEvalMetrics(
+            case_id="one",
+            required_content_hit=1.0,
+            required_order_pass=1.0,
+            section_presence_pass=1.0,
+            recent_context_preserved=None,
+            stale_content_exclusion_pass=None,
+            forbidden_content_absence_pass=1.0,
+            budget_pass=1.0,
+            recall_activation_pass=1.0,
+            compression_activation_pass=1.0,
+            snapshot_validity_pass=1.0,
+        )
+    ])
+
+    assert scorecard.recent_context_preservation_rate == 0.0
+    assert scorecard.stale_content_exclusion_rate == 0.0
