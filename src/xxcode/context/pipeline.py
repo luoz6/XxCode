@@ -129,12 +129,15 @@ class ContextPipeline:
 
         # ── L3: Collapse ──────────────────────────────────────────
         logger.debug("L3 collapse: %d tokens still over limit", stats.tokens_after)
+        post_l2_tokens = stats.tokens_after
         before_msgs = len(current)
         current = collapse_messages(current, keep_recent=5)
         stats.collapse_count = max(0, before_msgs - len(current))
         stats.level_reached = 3
 
-        stats.tokens_after = token_count_with_estimation(current)
+        post_l3_tokens = token_count_with_estimation(current)
+        stats.collapse_tokens_freed = post_l2_tokens - post_l3_tokens
+        stats.tokens_after = post_l3_tokens
         if stats.tokens_after <= soft_limit:
             return current, stats
 

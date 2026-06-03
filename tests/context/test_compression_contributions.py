@@ -133,3 +133,42 @@ async def test_l2_reports_exact_cleared_block_count(tmp_path, monkeypatch):
         if block.get("type") == "tool_result"
     ]
     assert "C" * 1800 in preserved_contents
+
+
+def _exchange(turn_id: int, text_size: int = 500) -> list[dict]:
+    text = f"turn-{turn_id}-" + ("x" * text_size)
+    return [
+        {"role": "user", "content": [{"type": "text", "text": text}]},
+        {"role": "assistant", "content": [{"type": "text", "text": text[::-1]}]},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_l3_reports_net_message_reduction_and_token_delta(tmp_path, monkeypatch):
+    pipeline = _make_pipeline(tmp_path)
+    messages: list[dict] = []
+    for turn_id in range(8):
+        messages.extend(_exchange(turn_id))
+
+    monkeypatch.setattr(pipeline_module, "should_autocompact", lambda **kwargs: False)
+
+    compressed, stats = await pipeline.compress(
+        messages,
+        current_tokens=None,
+        context_limit=500,
+        threshold=0.4,
+    )
+
+    assert stats.collapse_tokens_freed > 0
+    # 16 messages total, and with the current role-alternation partitioning
+    # each message forms its own exchange. keep_recent=5 preserves the newest
+    # 5 messages; the older 11 messages collapse to 1 summary.
+    # Net reduction = 16 - (1 + 5) = 10.
+    assert stats.collapse_count == 10
+    collapsed_texts = [
+        block["text"]
+        for msg in compressed
+        for block in msg.get("content", [])
+        if block.get("type") == "text"
+    ]
+    assert any(text.startswith("[Earlier conversation") for text in collapsed_texts)
