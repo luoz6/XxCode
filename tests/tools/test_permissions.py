@@ -2,6 +2,7 @@
 
 import pytest
 from xxcode.tools.BashTool._tokenizer import (
+    SAFE_ENV_VARS as canonical_safe_env_vars,
     extract_base_command as canonical_extract_base_command,
     normalize_base_token as canonical_normalize_base_token,
     split_pipeline as canonical_split_pipeline,
@@ -10,6 +11,7 @@ from xxcode.tools.BashTool._tokenizer import (
     tokenize as canonical_tokenize,
 )
 from xxcode.tools.BashTool.permissions import (
+    SAFE_ENV_VARS,
     get_simple_command_prefix,
     strip_safe_env_vars,
     strip_all_safe_env_prefixes,
@@ -135,6 +137,11 @@ class TestPermissionWrappersWithQuotedEnvValues:
     def test_get_simple_command_prefix_supports_quoted_safe_env_values(self):
         prefix = get_simple_command_prefix('NODE_ENV="prod test" npm run build')
         assert prefix == "npm run"
+
+
+class TestPermissionCompatibilityExports:
+    def test_permissions_safe_env_vars_re_exports_canonical_set(self):
+        assert SAFE_ENV_VARS is canonical_safe_env_vars
 
 
 class TestTokenizeCommand:

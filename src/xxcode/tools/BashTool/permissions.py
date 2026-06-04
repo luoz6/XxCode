@@ -16,6 +16,7 @@ from enum import Enum
 from typing import Any
 
 from ._tokenizer import (
+    SAFE_ENV_VARS,
     split_pipeline as _split_compound,
     strip_all_safe_env_prefixes as _canonical_strip_all_safe_env_prefixes,
     strip_safe_env_vars as _canonical_strip_safe_env_vars,
@@ -43,27 +44,6 @@ class ParseResult(Enum):
 # Variables like LD_PRELOAD are NOT in this list — they can change
 # command behaviour and must not be stripped unconditionally.
 
-SAFE_ENV_VARS: set[str] = {
-    # Go
-    "GOEXPERIMENT", "GOOS", "GOARCH", "GOPATH", "GOROOT",
-    "GOPROXY", "GOMODCACHE", "GONOSUMCHECK", "GONOSUMDB", "GOPRIVATE",
-    # Rust
-    "RUST_BACKTRACE", "RUST_LOG", "RUSTFLAGS",
-    # Node
-    "NODE_ENV", "NODE_OPTIONS",
-    # Python
-    "PYTHONPATH", "PYTHONUNBUFFERED", "PYTHONWARNINGS",
-    # Locale
-    "LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "LC_TIME",
-    # Common
-    "HOME", "USER", "PATH", "TERM", "SHELL",
-    # CI
-    "CI", "GITHUB_ACTIONS", "GITLAB_CI",
-    # Display
-    "DISPLAY", "WAYLAND_DISPLAY",
-    # Editor
-    "EDITOR", "VISUAL", "PAGER",
-}
 
 
 # ── Risk classification ───────────────────────────────────────────────
