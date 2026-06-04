@@ -1,6 +1,6 @@
 # Bash Security Parser Unification Design
 
-> Version 0.1 | 2026-06-04 | Scope: remove duplicated Bash command parsing and safe-env normalization logic while preserving current security behavior
+> Version 0.2 | 2026-06-04 | Scope: remove duplicated Bash command parsing and safe-env normalization logic while preserving current security behavior
 
 ## 1. Objective
 
@@ -63,7 +63,9 @@ Examples of current divergence risk:
    `tools/BashTool/_tokenizer.py` already handles redirect-aware `&`
    semantics.
 2. safe environment variables are duplicated in two modules.
-3. base-command extraction rules are duplicated and may evolve differently.
+3. tokenization rules are duplicated, but the classifier copy does not handle
+   backslash-escaped whitespace the same way as `_tokenizer.py`.
+4. base-command extraction rules are duplicated and may evolve differently.
 
 ## 4. Problem To Solve
 
@@ -118,14 +120,17 @@ Three approaches were considered.
 
 ### 7.1 Conservative Consumer Refactor
 
-Keep the existing canonical helpers where they already live, and refactor
+Keep the existing shell primitive surface small, but consolidate all low-level
+parsing helpers into the existing `_tokenizer.py` module and refactor
 downstream consumers to reuse them.
 
 Changes:
 
 - `security/classifier.py` reuses `_tokenizer.split_pipeline`
+- `security/classifier.py` reuses `_tokenizer.tokenize`
 - `security/classifier.py` reuses `_tokenizer.extract_base_command`
-- `security/classifier.py` reuses `permissions.strip_all_safe_env_prefixes`
+- `permissions.py` and `security/classifier.py` both reuse safe env-prefix
+  stripping from `_tokenizer.py`
 
 Benefits:
 
@@ -136,8 +141,8 @@ Benefits:
 
 Trade-offs:
 
-- helper ownership remains split across `_tokenizer.py` and `permissions.py`
-- the architecture becomes better, but not fully clean
+- `_tokenizer.py` becomes the canonical home for more shell primitives
+- this is still a primitive-level cleanup, not a full policy unification
 
 ### 7.2 New Shared Shell Common Module
 
@@ -193,11 +198,13 @@ The principle for this phase is:
 The following ownership model will be enforced:
 
 - `src/xxcode/tools/BashTool/_tokenizer.py`
+  - canonical safe environment-variable allowlist
+  - canonical safe environment-variable prefix stripping
   - canonical command tokenization
   - canonical compound-command splitting
   - canonical base-command extraction
 - `src/xxcode/tools/BashTool/permissions.py`
-  - canonical safe environment-variable stripping
+  - permission policy built on canonical shell primitives
 - `src/xxcode/security/classifier.py`
   - classification policy only
   - no locally owned parsing implementation
@@ -215,21 +222,29 @@ Planned changes:
 1. remove the duplicated `SAFE_ENV_VARS` constant
 2. replace local `strip_safe_env_vars` logic with shared stripping
 3. replace local `_split_pipeline` implementation with shared splitter
-4. replace local `_extract_base_command` implementation with shared base
+4. replace local `_tokenize_command` implementation with shared tokenization
+5. replace local `_extract_base_command` implementation with shared base
    extraction, while preserving the classifier's need to know whether the
    original command was privilege-elevated
 
 ### 9.3 Privilege-Elevation Handling
 
 One nuance remains: `security/classifier.py` currently needs a `has_sudo`
-signal, while `_tokenizer.extract_base_command()` returns only the normalized
-base command.
+signal and a `subcommand` value, while `_tokenizer.extract_base_command()`
+returns only the normalized base command.
 
 This phase will solve that with a minimal helper inside `classifier.py`:
 
-- keep a tiny wrapper that detects whether the command starts with
-  `sudo` / `doas` / `pkexec`
-- then use the canonical extracted base command from `_tokenizer.py`
+- tokenize with canonical `_tokenizer.tokenize()`
+- preserve the classifier's current redirect filtering semantics for tuple
+  construction by stopping tuple derivation at redirect tokens such as `>`,
+  `>>`, `<`, `2>`, `1>`, `&>`, `2>&1`, and `1>&2`
+- detect privilege prefixes `sudo`, `doas`, and `pkexec`
+- derive `base_command` from canonical `_tokenizer.extract_base_command()`
+  so path prefixes and executable extensions are normalized consistently
+- derive `subcommand` from the filtered token stream after any privilege
+  prefix, preserving current classifier semantics where the second token may
+  still be a flag such as `-la`
 
 This preserves low scope while still removing the duplicate full parser.
 
@@ -239,6 +254,7 @@ Some tests currently import:
 
 - `security.classifier.strip_safe_env_vars`
 - `security.classifier._split_pipeline`
+- `security.classifier._tokenize_command`
 - `security.classifier._extract_base_command`
 
 This phase will preserve those call sites by turning them into thin wrappers
@@ -246,6 +262,40 @@ over the shared logic rather than deleting them outright.
 
 That keeps external behavior stable while still removing implementation
 duplication.
+
+### 9.5 Safe Env Stripping Semantics
+
+The current regex-based env stripping implementations are not identical and can
+behave badly on edge cases such as quoted values with spaces.
+
+This phase will define one canonical behavior in `_tokenizer.py`:
+
+- strip only leading safe env assignments
+- strip repeatedly while safe env prefixes continue
+- strip only when a command remains after the env assignment
+- leave the string unchanged for env-only input such as `FOO=bar`
+- support quoted env values such as `FOO="bar baz" cmd`
+- fail closed: if the parser cannot confidently peel a safe env prefix, it
+  must leave the command unchanged rather than guessing
+
+This is a bounded behavior correction, not a policy expansion.
+
+### 9.6 Import-Direction Decision
+
+An import-graph audit was performed before revising this design:
+
+- `tools/BashTool/security.py` does not import `security.classifier`
+- `tools/BashTool/__init__.py` references `security.classifier` only inside
+  method bodies, not at module import time
+- no immediate runtime cycle was found for `classifier -> permissions`
+
+Even so, `classifier -> permissions` would introduce unnecessary package-level
+coupling because importing `xxcode.tools.BashTool.permissions` requires Python
+to initialize the `xxcode.tools.BashTool` package first.
+
+To keep the dependency direction cleaner, safe env constants and stripping
+helpers should move into `_tokenizer.py`, and both `permissions.py` and
+`classifier.py` should import them from there.
 
 ## 10. Files In Scope
 
@@ -274,17 +324,40 @@ Implementation will follow a red-green-refactor loop.
 
 ### 11.1 Red
 
-Write or tighten tests that lock down:
+Write or tighten tests that lock down the following explicit edge cases before
+changing production code:
 
-- shared pipeline splitting semantics
-- safe env-prefix stripping semantics
-- classifier behavior for safe, dangerous, and permission-needed commands
-- compatibility wrappers in `security/classifier.py`
+- background separator handling:
+  - `make & npm run build`
+- redirect-aware `&` handling:
+  - `ls 2>&1 | grep foo`
+- backslash-escaped whitespace:
+  - `echo hello\ world`
+- env-only input:
+  - `FOO=bar`
+- quoted env values with spaces:
+  - `FOO="bar baz" cmd`
+- repeated safe env prefixes:
+  - `NODE_ENV=test LANG=C python script.py`
+- mixed compound operators:
+  - `ls && echo ok || pwd; whoami & date`
+- privilege prefixes in base extraction:
+  - `sudo rm -rf /`
+  - `doas ls`
+  - `pkexec gedit`
+- path-prefixed and extension-suffixed base commands:
+  - `/usr/bin/git status`
+  - `C:\tools\git.exe status`
+- redirects interleaved with command tokens:
+  - `git status > out.txt`
 
 ### 11.2 Green
 
-Refactor `security/classifier.py` to reuse the canonical helpers with the
-smallest code change that makes the tests pass.
+Implement the smallest refactor that makes the above tests pass:
+
+- move safe env stripping primitives into `_tokenizer.py`
+- refactor `permissions.py` to reuse them
+- refactor `classifier.py` wrappers to reuse canonical primitives
 
 ### 11.3 Refactor
 
@@ -293,6 +366,7 @@ After the tests pass:
 - remove unused duplicated constants and parser branches
 - simplify imports and helper naming
 - keep the wrapper surface only where needed for compatibility
+- verify that the classifier still fails closed on ambiguous input
 
 ## 12. Error Handling And Safety
 
@@ -313,6 +387,9 @@ The minimum validation set for this phase is:
 If changes touch shared tokenizer semantics in a broader way, also run:
 
 - `pytest tests/tools/test_security_checks.py -v`
+
+If env-stripping behavior is corrected for quoted values, add focused tests to
+the relevant existing files rather than creating a new broad integration suite.
 
 Success criteria:
 
