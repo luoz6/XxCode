@@ -202,6 +202,7 @@ The following ownership model will be enforced:
   - canonical safe environment-variable prefix stripping
   - canonical command tokenization
   - canonical compound-command splitting
+  - canonical base-token normalization
   - canonical base-command extraction
 - `src/xxcode/tools/BashTool/permissions.py`
   - permission policy built on canonical shell primitives
@@ -224,8 +225,8 @@ Planned changes:
 3. replace local `_split_pipeline` implementation with shared splitter
 4. replace local `_tokenize_command` implementation with shared tokenization
 5. replace local `_extract_base_command` implementation with shared base
-   extraction, while preserving the classifier's need to know whether the
-   original command was privilege-elevated
+   extraction semantics, while preserving the classifier's need to know whether
+   the original command was privilege-elevated
 
 ### 9.3 Privilege-Elevation Handling
 
@@ -235,16 +236,22 @@ returns only the normalized base command.
 
 This phase will solve that with a minimal helper inside `classifier.py`:
 
-- tokenize with canonical `_tokenizer.tokenize()`
-- preserve the classifier's current redirect filtering semantics for tuple
-  construction by stopping tuple derivation at redirect tokens such as `>`,
-  `>>`, `<`, `2>`, `1>`, `&>`, `2>&1`, and `1>&2`
+- strip all safe env prefixes first using the canonical helper
+- tokenize the resulting `cleaned` command with canonical `_tokenizer.tokenize()`
+- preserve the classifier's current tuple-construction semantics by stopping at
+  redirect or command-terminator tokens such as `>`, `>>`, `<`, `2>`, `1>`,
+  `&>`, `2>&1`, `1>&2`, `|`, `;`, and `&`
 - detect privilege prefixes `sudo`, `doas`, and `pkexec`
-- derive `base_command` from canonical `_tokenizer.extract_base_command()`
-  so path prefixes and executable extensions are normalized consistently
+- derive `base_command` from canonical `_tokenizer.extract_base_command()` on
+  that same `cleaned` command so there is no double-stripping mismatch between
+  the tuple path and the base-command path
 - derive `subcommand` from the filtered token stream after any privilege
   prefix, preserving current classifier semantics where the second token may
   still be a flag such as `-la`
+- do **not** skip remaining env-assignment tokens in the classifier wrapper;
+  any env assignment still present after canonical safe-prefix stripping is
+  treated as part of the command and therefore prevents accidental
+  auto-approval of commands such as `LD_PRELOAD=evil.so ls`
 
 This preserves low scope while still removing the duplicate full parser.
 
@@ -275,6 +282,8 @@ This phase will define one canonical behavior in `_tokenizer.py`:
 - strip only when a command remains after the env assignment
 - leave the string unchanged for env-only input such as `FOO=bar`
 - support quoted env values such as `FOO="bar baz" cmd`
+- preserve unsafe env prefixes such as `LD_PRELOAD=evil.so ls` so downstream
+  callers remain fail-closed
 - fail closed: if the parser cannot confidently peel a safe env prefix, it
   must leave the command unchanged rather than guessing
 
@@ -296,6 +305,20 @@ to initialize the `xxcode.tools.BashTool` package first.
 To keep the dependency direction cleaner, safe env constants and stripping
 helpers should move into `_tokenizer.py`, and both `permissions.py` and
 `classifier.py` should import them from there.
+
+### 9.7 Documented Behavior Corrections
+
+This refactor intentionally corrects a small number of existing shell-parsing
+behaviors rather than preserving them:
+
+- backslash-escaped whitespace in classifier tokenization is handled
+  canonically
+- quoted safe env values can be stripped correctly
+- Windows path separators and executable suffixes are normalized consistently
+- unsafe env prefixes no longer risk collapsing to the underlying safe command
+  in the classifier path
+
+These corrections must be locked down with tests before implementation.
 
 ## 10. Files In Scope
 
@@ -337,6 +360,11 @@ changing production code:
   - `FOO=bar`
 - quoted env values with spaces:
   - `FOO="bar baz" cmd`
+- safe env assignment with no trailing command:
+  - `NODE_ENV=prod`
+  - `NODE_ENV=prod   `
+- unsafe env prefix before an otherwise safe command:
+  - `LD_PRELOAD=evil.so ls`
 - repeated safe env prefixes:
   - `NODE_ENV=test LANG=C python script.py`
 - mixed compound operators:
@@ -350,6 +378,8 @@ changing production code:
   - `C:\tools\git.exe status`
 - redirects interleaved with command tokens:
   - `git status > out.txt`
+- known existing limitation to document but not fix in this phase:
+  - `sudo -u root ls`
 
 ### 11.2 Green
 
@@ -437,3 +467,10 @@ This phase intentionally leaves two follow-up opportunities:
    `context/auto.py`, `context/pipeline.py`, and `skills/persistence.py`
 
 Those are worthwhile, but they should land as separate, testable changes.
+
+An additional known limitation remains out of scope for this phase:
+
+- `sudo -u root ls` and similar privilege-prefix flag forms are not normalized
+  correctly by the current base-command extraction shape; this should be
+  documented with an `xfail` or equivalent regression marker rather than fixed
+  opportunistically here.
