@@ -440,7 +440,7 @@ def _simple_semantic_case() -> ContextEvalCase:
     return ContextEvalCase(
         case_id="semantic-constraint",
         scenario="Preserve a direct user constraint.",
-        cwd_files={"CLAUDE.md": "Always preserve direct user constraints."},
+        cwd_files={"XXCODE.md": "Always preserve direct user constraints."},
         messages=[
             {
                 "role": "user",
@@ -475,7 +475,7 @@ def _memory_semantic_case() -> ContextEvalCase:
     return ContextEvalCase(
         case_id="semantic-memory",
         scenario="Recall relevant memory into the current snapshot.",
-        cwd_files={"CLAUDE.md": "Project instructions."},
+        cwd_files={"XXCODE.md": "Project instructions."},
         messages=[
             {
                 "role": "user",
@@ -528,7 +528,7 @@ def _compression_semantic_case() -> ContextEvalCase:
     return ContextEvalCase(
         case_id="semantic-compression",
         scenario="Compress noisy historical tool output.",
-        cwd_files={"CLAUDE.md": "Respect recent task context."},
+        cwd_files={"XXCODE.md": "Respect recent task context."},
         messages=[
             {
                 "role": "assistant",

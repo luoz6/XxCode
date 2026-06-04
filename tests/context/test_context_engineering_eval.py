@@ -72,7 +72,7 @@ def _simple_case() -> ContextEvalCase:
     return _make_context_case(
         case_id="constraint-only",
         scenario="Preserve a simple user constraint in the flattened snapshot.",
-        cwd_files={"CLAUDE.md": "Always preserve explicit user constraints."},
+        cwd_files={"XXCODE.md": "Always preserve explicit user constraints."},
         messages=[
             {
                 "role": "assistant",
@@ -152,7 +152,7 @@ def _memory_case() -> ContextEvalCase:
     return _make_context_case(
         case_id="memory-injection",
         scenario="Relevant memory is recalled and injected before the current user turn.",
-        cwd_files={"CLAUDE.md": "Project instructions."},
+        cwd_files={"XXCODE.md": "Project instructions."},
         messages=[
             {
                 "role": "assistant",
@@ -222,7 +222,7 @@ def _compressing_case() -> ContextEvalCase:
     return _make_context_case(
         case_id="compression-budget",
         scenario="Noisy historical tool output is compressed while recent context remains.",
-        cwd_files={"CLAUDE.md": "Respect recent task context."},
+        cwd_files={"XXCODE.md": "Respect recent task context."},
         messages=[
             {
                 "role": "assistant",

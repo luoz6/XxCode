@@ -29,6 +29,7 @@ def test_build_memory_section_reads_memory_index(tmp_path):
     assert "provided separately as hidden user context" in section
     assert "User is a data scientist" not in section
     assert "YAML frontmatter" in section
+    assert "Content already in XXCODE.md" in section
 
 
 def test_build_memory_section_empty_when_disabled(tmp_path):
@@ -41,7 +42,7 @@ def test_build_system_prompt_appends_memory_behavior_after_core_sections(tmp_pat
     memory_dir, config = _make_memory_config(tmp_path)
 
     monkeypatch.setattr(builder, "get_git_context", lambda cwd, compact=False: "")
-    monkeypatch.setattr(builder, "load_claude_md", lambda cwd: "")
+    monkeypatch.setattr(builder, "load_project_instructions", lambda cwd: "")
 
     memory_section = build_memory_section(config)
     prompt = build_system_prompt(tmp_path, memory_section=memory_section)
