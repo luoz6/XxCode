@@ -56,6 +56,9 @@ class TestCanonicalTokenizerPrimitives:
         tokens = canonical_tokenize(r"echo hello\ world")
         assert tokens == ["echo", "hello world"]
 
+    def test_canonical_strip_safe_env_vars_accepts_empty_string(self):
+        assert canonical_strip_safe_env_vars("") == ""
+
     def test_canonical_strip_safe_env_vars_preserves_unknown_env_only_input(self):
         assert canonical_strip_safe_env_vars("FOO=bar") == "FOO=bar"
 
@@ -110,7 +113,9 @@ Expected:
 
 - [ ] **Step 3: Add canonical env stripping and update `extract_base_command` in `_tokenizer.py`**
 
-Update `src/xxcode/tools/BashTool/_tokenizer.py` so the top of the file contains:
+Update `src/xxcode/tools/BashTool/_tokenizer.py` by preserving the existing
+module docstring, then adding `import re` and the new constants after the
+docstring and `from __future__ import annotations` block:
 
 ```python
 from __future__ import annotations
@@ -220,6 +225,16 @@ Replace `extract_base_command()` with:
 
 ```python
 def extract_base_command(command: str) -> str | None:
+    """Extract the normalized base command name from a command line.
+
+    Strips all safe env-var prefixes first, tokenizes the remaining command,
+    skips one privilege prefix (`sudo`, `doas`, `pkexec`) when present, and
+    normalizes the resulting base token by removing path prefixes and
+    executable extensions.
+
+    Canonical implementation used by sandbox.py, command_semantics.py,
+    and security/classifier.py.
+    """
     cleaned = strip_all_safe_env_prefixes(command.strip())
     if not cleaned:
         return None
@@ -403,6 +418,10 @@ class TestClassifierSharedWrappers:
         result = classify_command('NODE_ENV="prod test" LANG=C ls -la')
         assert result.command_class == CommandClass.SAFE
 
+    def test_classify_command_keeps_dangerous_detection_with_safe_env_prefix(self):
+        result = classify_command("NODE_ENV=prod rm -rf /tmp/foo")
+        assert result.command_class == CommandClass.DANGEROUS
+
     @pytest.mark.xfail(reason="Known limitation: sudo option prefixes are not normalized in this phase")
     def test_extract_base_command_documents_sudo_option_prefix_limitation(self):
         base, sub, has_sudo = _extract_base_command("sudo -u root ls")
@@ -522,7 +541,9 @@ cleaned = command.strip()
 This removes the redundant outer single-prefix stripping pass. `_extract_base_command()`
 becomes the only place that strips all safe env prefixes for base extraction.
 `strip_safe_env_vars()` remains available only as a compatibility wrapper and
-for direct tests.
+for direct tests. Keep the later `is_dangerous(cleaned)` check operating on the
+full trimmed command string so dangerous-pattern detection still sees commands
+such as `NODE_ENV=prod rm -rf /tmp/foo`.
 
 - [ ] **Step 4: Run the classifier and adjacent shell safety tests**
 
