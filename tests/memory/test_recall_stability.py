@@ -9,11 +9,21 @@ from tests.memory.helpers.recall_eval import (
 )
 
 
+async def _stability_metrics_for(tmp_path, case_index: int):
+    case = quality_benchmark_cases()[case_index]
+    return await compute_stability_metrics(case, tmp_path / case.case_id)
+
+
+async def _stability_scorecard_for_all(tmp_path):
+    metrics = []
+    for case in quality_benchmark_cases():
+        metrics.append(await compute_stability_metrics(case, tmp_path / case.case_id))
+    return build_stability_scorecard(metrics)
+
+
 @pytest.mark.asyncio
 async def test_repeat_consistency_uses_two_identical_runs(tmp_path):
-    case = quality_benchmark_cases()[0]
-
-    metrics = await compute_stability_metrics(case, tmp_path / case.case_id)
+    metrics = await _stability_metrics_for(tmp_path, 0)
 
     assert metrics.repeat_run_count == 2
     assert metrics.repeat_consistency == 1.0
@@ -21,9 +31,7 @@ async def test_repeat_consistency_uses_two_identical_runs(tmp_path):
 
 @pytest.mark.asyncio
 async def test_generated_perturbations_preserve_expected_recall(tmp_path):
-    case = quality_benchmark_cases()[1]
-
-    metrics = await compute_stability_metrics(case, tmp_path / case.case_id)
+    metrics = await _stability_metrics_for(tmp_path, 1)
 
     assert metrics.order_stability == 1.0
     assert metrics.description_robustness == 1.0
@@ -32,11 +40,7 @@ async def test_generated_perturbations_preserve_expected_recall(tmp_path):
 
 @pytest.mark.asyncio
 async def test_stability_scorecard_reports_case_count_and_rates(tmp_path):
-    metrics = []
-    for case in quality_benchmark_cases():
-        metrics.append(await compute_stability_metrics(case, tmp_path / case.case_id))
-
-    scorecard = build_stability_scorecard(metrics)
+    scorecard = await _stability_scorecard_for_all(tmp_path)
     print(format_stability_scorecard(scorecard))
 
     assert scorecard.n_cases == len(quality_benchmark_cases())

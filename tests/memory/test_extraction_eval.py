@@ -12,6 +12,54 @@ from tests.memory.helpers.extraction_eval import (
 )
 
 
+def _conversation(text: str) -> list[dict]:
+    return [{"role": "user", "content": text}]
+
+
+def _make_extraction_case(
+    *,
+    case_id: str,
+    conversation: list[dict] | None = None,
+    existing_memory_files: dict[str, str] | None = None,
+    candidate_memory_files: dict[str, str] | None = None,
+    expected_memory_filenames: set[str] | None = None,
+    expected_facts: set[str] | None = None,
+    expected_types: dict[str, str] | None = None,
+    source_evidence: dict[str, set[str]] | None = None,
+    forbidden_facts: set[str] | None = None,
+    duplicate_facts: set[str] | None = None,
+    expected_latest_facts: set[str] | None = None,
+    obsolete_facts: set[str] | None = None,
+    expected_updated_filenames: set[str] | None = None,
+    expected_deleted_filenames: set[str] | None = None,
+) -> ExtractionEvalCase:
+    return ExtractionEvalCase(
+        case_id=case_id,
+        conversation=conversation or [],
+        existing_memory_files=existing_memory_files or {},
+        candidate_memory_files=candidate_memory_files or {},
+        expected_memory_filenames=expected_memory_filenames or set(),
+        expected_facts=expected_facts or set(),
+        expected_types=expected_types or {},
+        source_evidence=source_evidence or {},
+        forbidden_facts=forbidden_facts or set(),
+        duplicate_facts=duplicate_facts or set(),
+        expected_latest_facts=expected_latest_facts or set(),
+        obsolete_facts=obsolete_facts or set(),
+        expected_updated_filenames=expected_updated_filenames or set(),
+        expected_deleted_filenames=expected_deleted_filenames or set(),
+    )
+
+
+def _existing_snake_case_memory() -> str:
+    return memory_file(
+        "user",
+        "Existing Style",
+        "User prefers snake_case",
+        "User prefers snake_case in Python tests.",
+    )
+
+
 def test_flatten_conversation_text_handles_string_and_text_blocks():
     conversation = [
         {"role": "user", "content": "I prefer snake_case in Python tests."},
@@ -52,12 +100,9 @@ def test_classify_operations_reports_create_update_delete_and_noop():
 
 
 def test_valid_candidate_memory_reports_validity_and_completeness():
-    case = ExtractionEvalCase(
+    case = _make_extraction_case(
         case_id="valid-candidate",
-        conversation=[
-            {"role": "user", "content": "I prefer snake_case in Python tests."},
-        ],
-        existing_memory_files={},
+        conversation=_conversation("I prefer snake_case in Python tests."),
         candidate_memory_files={
             "python-style.md": memory_file(
                 "user",
@@ -82,10 +127,8 @@ def test_valid_candidate_memory_reports_validity_and_completeness():
 
 
 def test_incomplete_candidate_memory_reduces_field_completeness():
-    case = ExtractionEvalCase(
+    case = _make_extraction_case(
         case_id="incomplete-candidate",
-        conversation=[],
-        existing_memory_files={},
         candidate_memory_files={
             "incomplete.md": memory_file(
                 "user",
@@ -95,7 +138,6 @@ def test_incomplete_candidate_memory_reduces_field_completeness():
             ),
         },
         expected_memory_filenames={"incomplete.md"},
-        expected_facts=set(),
         expected_types={"incomplete.md": "user"},
     )
 
@@ -108,12 +150,9 @@ def test_incomplete_candidate_memory_reduces_field_completeness():
 
 
 def test_expected_fact_coverage_uses_lexical_token_matching():
-    case = ExtractionEvalCase(
+    case = _make_extraction_case(
         case_id="fact-coverage",
-        conversation=[
-            {"role": "user", "content": "I prefer snake_case in Python tests."},
-        ],
-        existing_memory_files={},
+        conversation=_conversation("I prefer snake_case in Python tests."),
         candidate_memory_files={
             "python-style.md": memory_file(
                 "user",
@@ -138,12 +177,9 @@ def test_expected_fact_coverage_uses_lexical_token_matching():
 
 
 def test_grounding_rate_uses_claim_text_as_default_evidence():
-    case = ExtractionEvalCase(
+    case = _make_extraction_case(
         case_id="grounding-default-evidence",
-        conversation=[
-            {"role": "user", "content": "Use pandas dataframes for analysis."},
-        ],
-        existing_memory_files={},
+        conversation=_conversation("Use pandas dataframes for analysis."),
         candidate_memory_files={
             "analysis-style.md": memory_file(
                 "user",
@@ -163,12 +199,9 @@ def test_grounding_rate_uses_claim_text_as_default_evidence():
 
 
 def test_grounding_rate_uses_source_evidence_override():
-    case = ExtractionEvalCase(
+    case = _make_extraction_case(
         case_id="grounding-override",
-        conversation=[
-            {"role": "user", "content": "Use pathlib instead of os.path."},
-        ],
-        existing_memory_files={},
+        conversation=_conversation("Use pathlib instead of os.path."),
         candidate_memory_files={
             "path-style.md": memory_file(
                 "feedback",
@@ -189,12 +222,9 @@ def test_grounding_rate_uses_source_evidence_override():
 
 
 def test_forbidden_fact_leak_reduces_noise_suppression_rate():
-    case = ExtractionEvalCase(
+    case = _make_extraction_case(
         case_id="noise-leak",
-        conversation=[
-            {"role": "user", "content": "Temporarily debug port 5432 today."},
-        ],
-        existing_memory_files={},
+        conversation=_conversation("Temporarily debug port 5432 today."),
         candidate_memory_files={
             "debug-note.md": memory_file(
                 "project",
@@ -203,8 +233,6 @@ def test_forbidden_fact_leak_reduces_noise_suppression_rate():
                 "Temporarily debug port 5432 today.",
             ),
         },
-        expected_memory_filenames=set(),
-        expected_facts=set(),
         expected_types={"debug-note.md": "project"},
         forbidden_facts={"temporary port 5432 debug", "secret token abc"},
     )
@@ -217,14 +245,8 @@ def test_forbidden_fact_leak_reduces_noise_suppression_rate():
 
 
 def test_empty_forbidden_facts_excludes_noise_suppression_rate():
-    case = ExtractionEvalCase(
+    case = _make_extraction_case(
         case_id="no-forbidden-facts",
-        conversation=[],
-        existing_memory_files={},
-        candidate_memory_files={},
-        expected_memory_filenames=set(),
-        expected_facts=set(),
-        expected_types={},
     )
 
     metrics = compute_extraction_metrics(case)
@@ -234,17 +256,10 @@ def test_empty_forbidden_facts_excludes_noise_suppression_rate():
 
 
 def test_duplicate_control_checks_only_newly_created_files():
-    existing = memory_file(
-        "user",
-        "Existing Style",
-        "User prefers snake_case",
-        "User prefers snake_case in Python tests.",
-    )
-    case = ExtractionEvalCase(
+    existing = _existing_snake_case_memory()
+    case = _make_extraction_case(
         case_id="duplicate-created",
-        conversation=[
-            {"role": "user", "content": "I prefer snake_case in Python tests."},
-        ],
+        conversation=_conversation("I prefer snake_case in Python tests."),
         existing_memory_files={"existing-style.md": existing},
         candidate_memory_files={
             "existing-style.md": existing,
@@ -267,17 +282,10 @@ def test_duplicate_control_checks_only_newly_created_files():
 
 
 def test_duplicate_control_passes_when_duplicate_fact_is_not_in_created_file():
-    existing = memory_file(
-        "user",
-        "Existing Style",
-        "User prefers snake_case",
-        "User prefers snake_case in Python tests.",
-    )
-    case = ExtractionEvalCase(
+    existing = _existing_snake_case_memory()
+    case = _make_extraction_case(
         case_id="duplicate-not-created",
-        conversation=[
-            {"role": "user", "content": "I prefer snake_case in Python tests."},
-        ],
+        conversation=_conversation("I prefer snake_case in Python tests."),
         existing_memory_files={"existing-style.md": existing},
         candidate_memory_files={"existing-style.md": existing},
         expected_memory_filenames={"existing-style.md"},
@@ -292,11 +300,9 @@ def test_duplicate_control_passes_when_duplicate_fact_is_not_in_created_file():
 
 
 def test_conflict_update_correctness_requires_latest_and_no_obsolete_fact():
-    case = ExtractionEvalCase(
+    case = _make_extraction_case(
         case_id="conflict-updated",
-        conversation=[
-            {"role": "user", "content": "Actually use pathlib instead of os.path."},
-        ],
+        conversation=_conversation("Actually use pathlib instead of os.path."),
         existing_memory_files={
             "path-style.md": memory_file(
                 "feedback",
@@ -327,11 +333,9 @@ def test_conflict_update_correctness_requires_latest_and_no_obsolete_fact():
 
 
 def test_conflict_update_correctness_fails_when_obsolete_fact_remains():
-    case = ExtractionEvalCase(
+    case = _make_extraction_case(
         case_id="conflict-obsolete-remains",
-        conversation=[
-            {"role": "user", "content": "Actually use pathlib instead of os.path."},
-        ],
+        conversation=_conversation("Actually use pathlib instead of os.path."),
         existing_memory_files={
             "path-style.md": memory_file(
                 "feedback",
@@ -368,13 +372,11 @@ def test_expected_updated_filename_must_be_classified_as_updated():
         "Always run tests",
         "Always run tests before completion.",
     )
-    case = ExtractionEvalCase(
+    case = _make_extraction_case(
         case_id="missing-update",
-        conversation=[],
         existing_memory_files={"project-rule.md": unchanged},
         candidate_memory_files={"project-rule.md": unchanged},
         expected_memory_filenames={"project-rule.md"},
-        expected_facts=set(),
         expected_types={"project-rule.md": "project"},
         expected_updated_filenames={"project-rule.md"},
     )
@@ -390,14 +392,10 @@ def test_expected_deleted_filename_must_be_classified_as_deleted():
         "Temporary debug note",
         "Temporary debug note for today.",
     )
-    case = ExtractionEvalCase(
+    case = _make_extraction_case(
         case_id="missing-delete",
-        conversation=[],
         existing_memory_files={"temporary-note.md": existing},
         candidate_memory_files={"temporary-note.md": existing},
-        expected_memory_filenames=set(),
-        expected_facts=set(),
-        expected_types={},
         expected_deleted_filenames={"temporary-note.md"},
     )
 

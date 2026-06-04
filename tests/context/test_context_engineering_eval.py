@@ -15,8 +15,61 @@ from tests.context.helpers.context_eval import (
 )
 
 
-def _simple_case() -> ContextEvalCase:
+_DEFAULT_BUDGET = {
+    "soft_limit_tokens": 4000,
+    "hard_limit_tokens": 8000,
+}
+
+
+def _make_context_case(
+    *,
+    case_id: str,
+    scenario: str,
+    messages: list[dict],
+    target_turn_index: int,
+    cwd_files: dict[str, str] | None = None,
+    memory_index_content: str = "",
+    memory_files: dict[str, str] | None = None,
+    expected_compression_level: int = 0,
+    expected_present: list[str] | None = None,
+    expected_absent: list[str] | None = None,
+    expected_recent_present: list[str] | None = None,
+    expected_stale_absent: list[str] | None = None,
+    expected_order: list[tuple[str, str]] | None = None,
+    required_sections: list[str] | None = None,
+    expected_recall_diagnostics: RecallDiagnostics | None = None,
+    expected_compression_diagnostics: CompressionDiagnostics | None = None,
+    budget_expectation: dict[str, int] | None = None,
+) -> ContextEvalCase:
     return ContextEvalCase(
+        case_id=case_id,
+        scenario=scenario,
+        cwd_files=cwd_files or {},
+        messages=messages,
+        memory_index_content=memory_index_content,
+        memory_files=memory_files or {},
+        target_turn_index=target_turn_index,
+        expected_compression_level=expected_compression_level,
+        expected_present=expected_present or [],
+        expected_absent=expected_absent or [],
+        expected_recent_present=expected_recent_present or [],
+        expected_stale_absent=expected_stale_absent or [],
+        expected_order=expected_order or [],
+        required_sections=required_sections or [],
+        expected_recall_diagnostics=expected_recall_diagnostics
+        or RecallDiagnostics(index_injected=True, recalled_count=0, recall_empty=True),
+        expected_compression_diagnostics=expected_compression_diagnostics
+        or CompressionDiagnostics(
+            compression_used=False,
+            level_reached=expected_compression_level,
+            summary_injected=False,
+        ),
+        budget_expectation=budget_expectation or dict(_DEFAULT_BUDGET),
+    )
+
+
+def _simple_case() -> ContextEvalCase:
+    return _make_context_case(
         case_id="constraint-only",
         scenario="Preserve a simple user constraint in the flattened snapshot.",
         cwd_files={"CLAUDE.md": "Always preserve explicit user constraints."},
@@ -30,16 +83,9 @@ def _simple_case() -> ContextEvalCase:
                 "content": [{"type": "text", "text": "Do not modify settings.py"}],
             },
         ],
-        memory_index_content="",
-        memory_files={},
         target_turn_index=1,
-        expected_compression_level=0,
         expected_present=["Do not modify settings.py"],
-        expected_absent=[],
         expected_recent_present=["Do not modify settings.py"],
-        expected_stale_absent=[],
-        expected_order=[],
-        required_sections=[],
         expected_recall_diagnostics=RecallDiagnostics(
             index_injected=True,
             recalled_count=0,
@@ -50,10 +96,6 @@ def _simple_case() -> ContextEvalCase:
             level_reached=0,
             summary_injected=False,
         ),
-        budget_expectation={
-            "soft_limit_tokens": 4000,
-            "hard_limit_tokens": 8000,
-        },
     )
 
 
@@ -107,7 +149,7 @@ async def test_run_context_case_returns_snapshot_and_preserves_constraint(tmp_pa
 
 
 def _memory_case() -> ContextEvalCase:
-    return ContextEvalCase(
+    return _make_context_case(
         case_id="memory-injection",
         scenario="Relevant memory is recalled and injected before the current user turn.",
         cwd_files={"CLAUDE.md": "Project instructions."},
@@ -136,33 +178,20 @@ def _memory_case() -> ContextEvalCase:
             ),
         },
         target_turn_index=1,
-        expected_compression_level=0,
         expected_present=[
             "Contents of",
             "Use pandas for dataframe-style analysis.",
             "Please plan the dataframe analysis flow.",
         ],
-        expected_absent=[],
         expected_recent_present=["Please plan the dataframe analysis flow."],
-        expected_stale_absent=[],
         expected_order=[
             ("Use pandas for dataframe-style analysis.", "Please plan the dataframe analysis flow."),
         ],
-        required_sections=[],
         expected_recall_diagnostics=RecallDiagnostics(
             index_injected=True,
             recalled_count=1,
             recall_empty=False,
         ),
-        expected_compression_diagnostics=CompressionDiagnostics(
-            compression_used=False,
-            level_reached=0,
-            summary_injected=False,
-        ),
-        budget_expectation={
-            "soft_limit_tokens": 4000,
-            "hard_limit_tokens": 8000,
-        },
     )
 
 
@@ -190,7 +219,7 @@ def _compressing_case() -> ContextEvalCase:
         "Successfully installed demo-package\n\n"
         + ("Collecting demo-package\nDownloading demo-package\n" * 80)
     )
-    return ContextEvalCase(
+    return _make_context_case(
         case_id="compression-budget",
         scenario="Noisy historical tool output is compressed while recent context remains.",
         cwd_files={"CLAUDE.md": "Respect recent task context."},
@@ -225,21 +254,12 @@ def _compressing_case() -> ContextEvalCase:
                 "content": [{"type": "text", "text": "Keep processor.py as the current focus."}],
             },
         ],
-        memory_index_content="",
-        memory_files={},
         target_turn_index=3,
         expected_compression_level=1,
         expected_present=["Keep processor.py as the current focus."],
         expected_absent=["Collecting demo-package\nDownloading demo-package\nCollecting demo-package"],
         expected_recent_present=["Keep processor.py as the current focus."],
         expected_stale_absent=["Successfully installed demo-package"],
-        expected_order=[],
-        required_sections=[],
-        expected_recall_diagnostics=RecallDiagnostics(
-            index_injected=True,
-            recalled_count=0,
-            recall_empty=True,
-        ),
         expected_compression_diagnostics=CompressionDiagnostics(
             compression_used=True,
             level_reached=1,

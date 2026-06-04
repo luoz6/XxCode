@@ -1,5 +1,3 @@
-import asyncio
-
 import pytest
 
 from tests.memory.helpers.recall_eval import (
@@ -15,12 +13,38 @@ from tests.memory.helpers.recall_eval import (
 )
 
 
+def _make_recall_case(
+    *,
+    case_id: str,
+    query: str = "remember pandas preferences",
+    index_content: str = "",
+    memory_files: dict[str, str] | None = None,
+    expected_filenames: set[str] | None = None,
+    expected_top1: str | None = None,
+) -> RecallEvalCase:
+    return RecallEvalCase(
+        case_id=case_id,
+        query=query,
+        index_content=index_content,
+        memory_files=memory_files or {},
+        expected_filenames=expected_filenames or set(),
+        expected_top1=expected_top1,
+    )
+
+
+async def _complete_selector(user_content: str) -> str:
+    client = DeterministicRecallClient()
+    return await client.complete(
+        system_prompt="selector",
+        messages=[{"role": "user", "content": user_content}],
+        max_tokens=256,
+    )
+
+
 def test_validate_case_rejects_index_entry_without_memory_file():
-    case = RecallEvalCase(
+    case = _make_recall_case(
         case_id="ghost-index-entry",
-        query="remember pandas preferences",
         index_content="- [Ghost](ghost.md) - User prefers pandas\n",
-        memory_files={},
         expected_filenames={"ghost.md"},
         expected_top1="ghost.md",
     )
@@ -30,9 +54,8 @@ def test_validate_case_rejects_index_entry_without_memory_file():
 
 
 def test_validate_case_rejects_expected_file_missing_from_index():
-    case = RecallEvalCase(
+    case = _make_recall_case(
         case_id="expected-not-indexed",
-        query="remember pandas preferences",
         index_content="- [Other](other.md) - unrelated\n",
         memory_files={
             "other.md": "---\nmetadata:\n  type: user\n---\n\nOther",
@@ -46,69 +69,38 @@ def test_validate_case_rejects_expected_file_missing_from_index():
         validate_case(case)
 
 
-def test_deterministic_selector_reads_available_memories_section():
-    async def _run():
-        client = DeterministicRecallClient()
-        response = await client.complete(
-            system_prompt="selector",
-            messages=[
-                {
-                    "role": "user",
-                    "content": (
-                        "Query: pandas dataframe analysis\n\n"
-                        "Available memories:\n"
-                        "- [indexed] pandas-style.md: User prefers pandas dataframes\n"
-                        "- [indexed] release-plan.md: Release deadline planning\n"
-                    ),
-                }
-            ],
-            max_tokens=256,
-        )
+@pytest.mark.asyncio
+async def test_deterministic_selector_reads_available_memories_section():
+    response = await _complete_selector(
+        "Query: pandas dataframe analysis\n\n"
+        "Available memories:\n"
+        "- [indexed] pandas-style.md: User prefers pandas dataframes\n"
+        "- [indexed] release-plan.md: Release deadline planning\n"
+    )
 
-        assert response == '["pandas-style.md"]'
-
-    asyncio.run(_run())
+    assert response == '["pandas-style.md"]'
 
 
-def test_deterministic_selector_returns_empty_when_no_terms_overlap():
-    async def _run():
-        client = DeterministicRecallClient()
-        response = await client.complete(
-            system_prompt="selector",
-            messages=[
-                {
-                    "role": "user",
-                    "content": (
-                        "Query: image rendering canvas\n\n"
-                        "Available memories:\n"
-                        "- [indexed] pandas-style.md: User prefers pandas dataframes\n"
-                        "- [indexed] release-plan.md: Release deadline planning\n"
-                    ),
-                }
-            ],
-            max_tokens=256,
-        )
+@pytest.mark.asyncio
+async def test_deterministic_selector_returns_empty_when_no_terms_overlap():
+    response = await _complete_selector(
+        "Query: image rendering canvas\n\n"
+        "Available memories:\n"
+        "- [indexed] pandas-style.md: User prefers pandas dataframes\n"
+        "- [indexed] release-plan.md: Release deadline planning\n"
+    )
 
-        assert response == "[]"
-
-    asyncio.run(_run())
+    assert response == "[]"
 
 
-def test_deterministic_selector_fails_when_manifest_section_missing():
-    async def _run():
-        client = DeterministicRecallClient()
-        with pytest.raises(ValueError, match="Available memories"):
-            await client.complete(
-                system_prompt="selector",
-                messages=[{"role": "user", "content": "Query: pandas"}],
-                max_tokens=256,
-            )
-
-    asyncio.run(_run())
+@pytest.mark.asyncio
+async def test_deterministic_selector_fails_when_manifest_section_missing():
+    with pytest.raises(ValueError, match="Available memories"):
+        await _complete_selector("Query: pandas")
 
 
 def test_quality_metrics_compute_precision_recall_f1_and_top1():
-    case = RecallEvalCase(
+    case = _make_recall_case(
         case_id="metric-demo",
         query="pandas dataframe analysis",
         index_content=(
@@ -141,7 +133,7 @@ def test_quality_metrics_compute_precision_recall_f1_and_top1():
 
 
 def test_quality_scorecard_excludes_cases_without_top1_expectation():
-    no_top1_case = RecallEvalCase(
+    no_top1_case = _make_recall_case(
         case_id="no-top1",
         query="pandas dataframe analysis",
         index_content="- [Pandas Style](pandas-style.md) - User prefers pandas\n",
@@ -150,7 +142,7 @@ def test_quality_scorecard_excludes_cases_without_top1_expectation():
         },
         expected_filenames={"pandas-style.md"},
     )
-    with_top1_case = RecallEvalCase(
+    with_top1_case = _make_recall_case(
         case_id="with-top1",
         query="release planning",
         index_content="- [Release Plan](release-plan.md) - Release planning\n",
