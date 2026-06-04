@@ -36,6 +36,7 @@ Add these imports near the top of `tests/tools/test_permissions.py`:
 ```python
 from xxcode.tools.BashTool._tokenizer import (
     extract_base_command as canonical_extract_base_command,
+    normalize_base_token as canonical_normalize_base_token,
     split_pipeline as canonical_split_pipeline,
     strip_all_safe_env_prefixes as canonical_strip_all_safe_env_prefixes,
     strip_safe_env_vars as canonical_strip_safe_env_vars,
@@ -84,6 +85,9 @@ class TestCanonicalTokenizerPrimitives:
             r'NODE_ENV="prod test" C:\tools\git.exe status'
         )
         assert base == "git"
+
+    def test_canonical_normalize_base_token_accepts_empty_string(self):
+        assert canonical_normalize_base_token("") == ""
 ```
 
 - [ ] **Step 2: Run the focused tests to verify they fail first**
@@ -294,6 +298,7 @@ Change the imports at the top of `src/xxcode/tools/BashTool/permissions.py` to:
 
 ```python
 from ._tokenizer import (
+    SAFE_ENV_VARS,
     split_pipeline as _split_compound,
     strip_all_safe_env_prefixes as _canonical_strip_all_safe_env_prefixes,
     strip_safe_env_vars as _canonical_strip_safe_env_vars,
@@ -305,6 +310,9 @@ Delete the local `_ENV_ASSIGN_RE` constant and replace the two wrapper
 functions with:
 
 ```python
+# Re-exported for compatibility with any external imports that referenced
+# xxcode.tools.BashTool.permissions.SAFE_ENV_VARS directly.
+
 def strip_safe_env_vars(command: str) -> str:
     """Strip safe environment variable assignments from the command."""
     return _canonical_strip_safe_env_vars(command)
@@ -387,6 +395,14 @@ class TestClassifierSharedWrappers:
         base, sub, has_sudo = _extract_base_command("LD_PRELOAD=evil.so ls")
         assert (base, sub, has_sudo) == ("LD_PRELOAD=evil.so", "ls", False)
 
+    def test_classify_command_requires_permission_for_unsafe_env_prefix(self):
+        result = classify_command("LD_PRELOAD=evil.so ls")
+        assert result.command_class == CommandClass.NEEDS_PERMISSION
+
+    def test_classify_command_still_allows_multiple_safe_env_prefixes(self):
+        result = classify_command('NODE_ENV="prod test" LANG=C ls -la')
+        assert result.command_class == CommandClass.SAFE
+
     @pytest.mark.xfail(reason="Known limitation: sudo option prefixes are not normalized in this phase")
     def test_extract_base_command_documents_sudo_option_prefix_limitation(self):
         base, sub, has_sudo = _extract_base_command("sudo -u root ls")
@@ -421,6 +437,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 
 from ..tools.BashTool._tokenizer import (
+    SAFE_ENV_VARS,
     normalize_base_token as _canonical_normalize_base_token,
     split_pipeline as _canonical_split_pipeline,
     strip_all_safe_env_prefixes as _canonical_strip_all_safe_env_prefixes,
@@ -430,7 +447,8 @@ from ..tools.BashTool._tokenizer import (
 from .patterns import is_dangerous
 ```
 
-Delete the local `SAFE_ENV_VARS` constant.
+Delete the local `SAFE_ENV_VARS` constant and replace it with the imported
+compatibility re-export from `_tokenizer.py`.
 
 Add these module-level constants near the safe-command tables:
 
@@ -441,6 +459,11 @@ _COMMAND_STOP_TOKENS = {
     "|", ";", "&", "&&", "||",
 }
 ```
+
+Add a short comment above `_COMMAND_STOP_TOKENS` noting that `|`, `;`, `&`,
+`&&`, and `||` are defensive stop tokens. They should already have been
+separated by `_split_pipeline()`, but the wrapper stops on them anyway to stay
+fail-closed if it ever receives an unsplit segment.
 
 Replace the helper functions at the bottom of the file with:
 
@@ -484,8 +507,22 @@ def _extract_base_command(command: str) -> tuple[str | None, str | None, bool]:
     return base, subcommand, has_sudo
 ```
 
-Keep `classify_command()` behavior unchanged except for relying on these
-wrappers.
+Also change the start of `classify_command()` from:
+
+```python
+cleaned = strip_safe_env_vars(command.strip())
+```
+
+to:
+
+```python
+cleaned = command.strip()
+```
+
+This removes the redundant outer single-prefix stripping pass. `_extract_base_command()`
+becomes the only place that strips all safe env prefixes for base extraction.
+`strip_safe_env_vars()` remains available only as a compatibility wrapper and
+for direct tests.
 
 - [ ] **Step 4: Run the classifier and adjacent shell safety tests**
 
@@ -501,7 +538,7 @@ Expected: PASS
 
 ```bash
 git add tests/security/test_classifier.py tests/tools/test_permissions.py src/xxcode/security/classifier.py
-git commit -m "refactor: unify bash classifier parsing"
+git commit -m "refactor: unify bash classifier parsing and close unsafe env gap"
 ```
 
 ## Self-Review
@@ -514,6 +551,7 @@ git commit -m "refactor: unify bash classifier parsing"
 - Placeholder scan:
   - no `TBD`, `TODO`, or deferred code steps remain
 - Type consistency:
+  - `SAFE_ENV_VARS` remains re-exported from both `permissions.py` and `classifier.py`
   - `_tokenizer.normalize_base_token()` becomes the shared normalization primitive
   - `_tokenizer.extract_base_command()` remains `str | None`
   - `classifier._extract_base_command()` remains `tuple[str | None, str | None, bool]`

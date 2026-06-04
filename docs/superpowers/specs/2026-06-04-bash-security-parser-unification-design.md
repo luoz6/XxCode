@@ -252,6 +252,9 @@ This phase will solve that with a minimal helper inside `classifier.py`:
   any env assignment still present after canonical safe-prefix stripping is
   treated as part of the command and therefore prevents accidental
   auto-approval of commands such as `LD_PRELOAD=evil.so ls`
+- remove the classifier's redundant outer single-prefix stripping step so the
+  command is cleaned once with `strip_all_safe_env_prefixes()` rather than
+  partially stripped twice
 
 This preserves low scope while still removing the duplicate full parser.
 
@@ -317,6 +320,8 @@ behaviors rather than preserving them:
 - Windows path separators and executable suffixes are normalized consistently
 - unsafe env prefixes no longer risk collapsing to the underlying safe command
   in the classifier path
+- commands such as `LD_PRELOAD=evil.so ls` no longer risk speculative
+  auto-approval through over-aggressive env-token dropping
 
 These corrections must be locked down with tests before implementation.
 
