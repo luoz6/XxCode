@@ -29,4 +29,5 @@ ENV/
 
 # Local temp and generated data
 .tmp/
+docs/
 docs/reports/
