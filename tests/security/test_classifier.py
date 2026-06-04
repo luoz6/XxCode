@@ -132,6 +132,10 @@ class TestClassifierSharedWrappers:
         result = classify_command('NODE_ENV="prod test" LANG=C ls -la')
         assert result.command_class == CommandClass.SAFE
 
+    def test_classify_command_keeps_dangerous_detection_with_safe_env_prefix(self):
+        result = classify_command("NODE_ENV=prod rm -rf /tmp/foo")
+        assert result.command_class == CommandClass.DANGEROUS
+
     @pytest.mark.xfail(reason="Known limitation: sudo option prefixes are not normalized in this phase")
     def test_extract_base_command_documents_sudo_option_prefix_limitation(self):
         base, sub, has_sudo = _extract_base_command("sudo -u root ls")

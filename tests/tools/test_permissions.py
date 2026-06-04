@@ -125,8 +125,12 @@ class TestPermissionWrappersWithQuotedEnvValues:
         result = strip_safe_env_vars('NODE_ENV="prod test" npm run build')
         assert result == "npm run build"
 
-    def test_permissions_strip_safe_env_vars_preserves_env_only_input(self):
+    def test_permissions_strip_safe_env_vars_preserves_unknown_env_only_input(self):
         assert strip_safe_env_vars("FOO=bar") == "FOO=bar"
+
+    def test_permissions_strip_safe_env_vars_preserves_safe_env_without_trailing_command(self):
+        assert strip_safe_env_vars("NODE_ENV=prod") == "NODE_ENV=prod"
+        assert strip_safe_env_vars("NODE_ENV=prod   ") == "NODE_ENV=prod   "
 
     def test_get_simple_command_prefix_supports_quoted_safe_env_values(self):
         prefix = get_simple_command_prefix('NODE_ENV="prod test" npm run build')
@@ -158,6 +162,9 @@ class TestCanonicalTokenizerPrimitives:
     def test_tokenize_preserves_escaped_spaces(self):
         tokens = canonical_tokenize(r"echo hello\ world")
         assert tokens == ["echo", "hello world"]
+
+    def test_canonical_strip_safe_env_vars_accepts_empty_string(self):
+        assert canonical_strip_safe_env_vars("") == ""
 
     def test_canonical_strip_safe_env_vars_preserves_unknown_env_only_input(self):
         assert canonical_strip_safe_env_vars("FOO=bar") == "FOO=bar"
