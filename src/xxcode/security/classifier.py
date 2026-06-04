@@ -18,7 +18,10 @@ from enum import Enum, auto
 
 from ..tools.BashTool._tokenizer import (
     extract_base_command as _canonical_extract_base_command,
+    SAFE_ENV_VARS,
+    normalize_base_token as _canonical_normalize_base_token,
     split_pipeline as _canonical_split_pipeline,
+    strip_all_safe_env_prefixes as _canonical_strip_all_safe_env_prefixes,
     strip_safe_env_vars as _canonical_strip_safe_env_vars,
     tokenize as _canonical_tokenize,
 )
@@ -33,22 +36,24 @@ class CommandClass(Enum):
 
 # ── Safe environment variables (harmless to strip) ───────────────────
 
-SAFE_ENV_VARS: set[str] = {
-    "GOEXPERIMENT", "GOOS", "GOARCH", "GOPATH", "GOROOT",
-    "GOPROXY", "GOMODCACHE", "GONOSUMCHECK", "GONOSUMDB", "GOPRIVATE",
-    "RUST_BACKTRACE", "RUST_LOG", "RUSTFLAGS",
-    "NODE_ENV", "NODE_OPTIONS",
-    "PYTHONPATH", "PYTHONUNBUFFERED", "PYTHONWARNINGS",
-    "LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "LC_TIME",
-    "HOME", "USER", "PATH", "TERM", "SHELL",
-    "CI", "GITHUB_ACTIONS", "GITLAB_CI",
-    "DISPLAY", "WAYLAND_DISPLAY",
-    "EDITOR", "VISUAL", "PAGER",
-}
-
 _PRIVILEGE_PREFIXES = ("sudo", "doas", "pkexec")
-_REDIRECT_TOKENS = {">", ">>", "<", "2>", "1>", "&>", "2>&1", "1>&2", "|", ";"}
-_ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_]\w*=")
+# Defensive stop tokens: _split_pipeline() should already separate these,
+# but we still stop on them here to stay fail-closed on unsplit input.
+_COMMAND_STOP_TOKENS = {
+    ">",
+    ">>",
+    "<",
+    "2>",
+    "1>",
+    "&>",
+    "2>&1",
+    "1>&2",
+    "|",
+    ";",
+    "&",
+    "&&",
+    "||",
+}
 
 
 # Commands that are always safe (read-only, no side effects).
@@ -113,7 +118,7 @@ def classify_command(command: str) -> ClassifierResult:
       4. Fall back to is_dangerous() pattern matching for DANGEROUS.
       5. Everything else is NEEDS_PERMISSION.
     """
-    cleaned = strip_safe_env_vars(command.strip())
+    cleaned = command.strip()
 
     # Handle chained commands (&&, ||, ;, |) — if any segment is
     # non-safe, the whole command needs permission.
@@ -135,6 +140,9 @@ def classify_command(command: str) -> ClassifierResult:
     # underlying command — running anything as root is a privilege boundary.
     if has_sudo:
         return ClassifierResult(CommandClass.DANGEROUS, reason="sudo/doas elevates privileges")
+
+    if "=" in base:
+        return ClassifierResult(CommandClass.NEEDS_PERMISSION, reason="command has unsafe env prefix")
 
     # Check if the base command itself is safe.
     if base in _SAFE_COMMANDS:
@@ -190,13 +198,12 @@ def _extract_base_command(command: str) -> tuple[str | None, str | None, bool]:
 
     Returns (base_command, subcommand_or_None, has_sudo).
     """
-    tokens = _tokenize_command(command.strip())
+    cleaned = _canonical_strip_all_safe_env_prefixes(command.strip())
+    tokens = _tokenize_command(cleaned)
 
     filtered: list[str] = []
     for token in tokens:
-        if _ENV_ASSIGNMENT_RE.match(token):
-            continue
-        if token in _REDIRECT_TOKENS:
+        if token in _COMMAND_STOP_TOKENS:
             break
         filtered.append(token)
 
@@ -208,15 +215,11 @@ def _extract_base_command(command: str) -> tuple[str | None, str | None, bool]:
     if idx >= len(filtered):
         return None, None, has_sudo
 
-    base = _canonical_extract_base_command(command)
-    if base is not None and _ENV_ASSIGNMENT_RE.match(base):
-        base = filtered[idx]
-        base = base.rsplit("/", 1)[-1]
-        base = base.rsplit("\\", 1)[-1]
-        if "." in base:
-            name_part = base.rsplit(".", 1)[0]
-            if name_part:
-                base = name_part
+    base_token = filtered[idx]
+    if "=" in base_token:
+        base = base_token
+    else:
+        base = _canonical_extract_base_command(cleaned) or _canonical_normalize_base_token(base_token)
     subcommand = filtered[idx + 1] if idx + 1 < len(filtered) else None
 
     return base, subcommand, has_sudo

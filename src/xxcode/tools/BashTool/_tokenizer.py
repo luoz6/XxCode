@@ -1,16 +1,4 @@
-"""Shared shell tokenizer — canonical implementation used by all BashTool modules.
-
-Replaces 5 separate tokenizer/pipeline-splitter implementations across
-permissions, command_semantics, sed_validation, path_validation,
-and sandbox modules (see BashTool/).
-
-Two functions:
-  tokenize(command, strip_quotes=False) → list[str]
-  split_pipeline(command)               → list[str]
-
-The &-aware pipeline splitter correctly handles redirects like 2>&1
-and &>file — it only treats & as a separator when NOT inside a redirect.
-"""
+"""Canonical shell tokenizer and command splitting helpers for BashTool."""
 
 from __future__ import annotations
 
@@ -18,32 +6,49 @@ import re
 
 
 SAFE_ENV_VARS: set[str] = {
-    "GOEXPERIMENT", "GOOS", "GOARCH", "GOPATH", "GOROOT",
-    "GOPROXY", "GOMODCACHE", "GONOSUMCHECK", "GONOSUMDB", "GOPRIVATE",
-    "RUST_BACKTRACE", "RUST_LOG", "RUSTFLAGS",
-    "NODE_ENV", "NODE_OPTIONS",
-    "PYTHONPATH", "PYTHONUNBUFFERED", "PYTHONWARNINGS",
-    "LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "LC_TIME",
-    "HOME", "USER", "PATH", "TERM", "SHELL",
-    "CI", "GITHUB_ACTIONS", "GITLAB_CI",
-    "DISPLAY", "WAYLAND_DISPLAY",
-    "EDITOR", "VISUAL", "PAGER",
+    "GOEXPERIMENT",
+    "GOOS",
+    "GOARCH",
+    "GOPATH",
+    "GOROOT",
+    "GOPROXY",
+    "GOMODCACHE",
+    "GONOSUMCHECK",
+    "GONOSUMDB",
+    "GOPRIVATE",
+    "RUST_BACKTRACE",
+    "RUST_LOG",
+    "RUSTFLAGS",
+    "NODE_ENV",
+    "NODE_OPTIONS",
+    "PYTHONPATH",
+    "PYTHONUNBUFFERED",
+    "PYTHONWARNINGS",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LC_MESSAGES",
+    "LC_TIME",
+    "HOME",
+    "USER",
+    "PATH",
+    "TERM",
+    "SHELL",
+    "CI",
+    "GITHUB_ACTIONS",
+    "GITLAB_CI",
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "EDITOR",
+    "VISUAL",
+    "PAGER",
 }
 
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_]\w*$")
 
 
 def tokenize(command: str, *, strip_quotes: bool = False) -> list[str]:
-    """Tokenize a shell command respecting quotes and backslash escapes.
-
-    Args:
-        command: Raw shell command string.
-        strip_quotes: If True, surrounding quote characters are excluded
-                      from token content (used by sed_validation).
-
-    Returns:
-        List of token strings.
-    """
+    """Tokenize a shell command while respecting quotes and backslash escapes."""
     tokens: list[str] = []
     current: list[str] = []
     in_single = False
@@ -80,15 +85,7 @@ def tokenize(command: str, *, strip_quotes: bool = False) -> list[str]:
 
 
 def split_pipeline(command: str) -> list[str]:
-    """Split a compound command by &&, ||, ;, |, & while respecting quotes.
-
-    Handles & correctly:
-      - ls 2>&1 | grep foo  →  ["ls 2>&1", "grep foo"]   (& is redirect, not separator)
-      - make & npm run      →  ["make", "npm run"]        (& is background separator)
-
-    Returns:
-        List of subcommand strings.  If no separators found, returns [command].
-    """
+    """Split a compound command by shell control operators while respecting quotes."""
     segments: list[str] = []
     current: list[str] = []
     in_single = False
@@ -108,7 +105,7 @@ def split_pipeline(command: str) -> list[str]:
         elif ch == '"' and not in_single:
             in_double = not in_double
         elif not in_single and not in_double:
-            two_char = command[i:i + 2]
+            two_char = command[i : i + 2]
             if two_char in ("&&", "||"):
                 seg = "".join(current).strip()
                 if seg:
@@ -116,21 +113,19 @@ def split_pipeline(command: str) -> list[str]:
                 current = []
                 i += 2
                 continue
-            elif ch in (";", "|"):
+            if ch in (";", "|"):
                 seg = "".join(current).strip()
                 if seg:
                     segments.append(seg)
                 current = []
                 i += 1
                 continue
-            elif ch == "&":
+            if ch == "&":
                 prev = "".join(current).rstrip()
                 if prev and prev[-1] in (">", "<"):
-                    # Inside a redirect like 2>&1 — not a separator.
                     current.append(ch)
                     i += 1
                     continue
-                # Check if & starts a redirect: &> or &>> (bash stdout+stderr merge)
                 if i + 1 < n and command[i + 1] == ">":
                     current.append(ch)
                     i += 1
@@ -187,6 +182,7 @@ def _leading_env_name(token: str) -> str | None:
 
 
 def strip_safe_env_vars(command: str) -> str:
+    """Strip one leading safe env assignment when followed by a command."""
     cleaned = command.lstrip()
     if not cleaned:
         return ""
@@ -207,6 +203,7 @@ def strip_safe_env_vars(command: str) -> str:
 
 
 def strip_all_safe_env_prefixes(command: str) -> str:
+    """Repeatedly strip leading safe env assignments."""
     previous = None
     current = command
     while previous != current:
@@ -215,13 +212,24 @@ def strip_all_safe_env_prefixes(command: str) -> str:
     return current
 
 
-def extract_base_command(command: str) -> str | None:
-    """Extract the base command name from a command line.
+def normalize_base_token(token: str) -> str:
+    """Normalize a base token by removing path prefixes and extensions."""
+    if "=" in token:
+        return token
 
-    Strips env vars, paths, sudo prefixes, and file extensions.
-    Canonical implementation — used by sandbox.py, command_semantics.py,
-    and security/classifier.py.
-    """
+    token = token.rsplit("/", 1)[-1]
+    token = token.rsplit("\\", 1)[-1]
+
+    if "." in token:
+        name_part = token.rsplit(".", 1)[0]
+        if name_part:
+            token = name_part
+
+    return token
+
+
+def extract_base_command(command: str) -> str | None:
+    """Extract the normalized base command name from a command line."""
     cleaned = strip_all_safe_env_prefixes(command.strip())
     if not cleaned:
         return None
@@ -231,21 +239,10 @@ def extract_base_command(command: str) -> str | None:
         return None
     base, rest = split
 
-    # Skip sudo/doas/pkexec prefixes.
     if base in ("sudo", "doas", "pkexec"):
         next_split = _split_first_shell_token(rest)
         if next_split is None:
             return None
         base, _rest = next_split
 
-    # Strip path prefix: /usr/bin/git → git
-    base = base.rsplit("/", 1)[-1]
-    base = base.rsplit("\\", 1)[-1]
-
-    # Strip extension: git.exe → git
-    if "." in base:
-        name_part = base.rsplit(".", 1)[0]
-        if name_part:
-            base = name_part
-
-    return base
+    return normalize_base_token(base)

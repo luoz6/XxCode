@@ -76,7 +76,7 @@ class TestExtractBaseCommand:
         assert has_sudo is False
 
     def test_with_env_vars(self):
-        base, sub, has_sudo = _extract_base_command("FOO=bar ls -la")
+        base, sub, has_sudo = _extract_base_command("NODE_ENV=prod ls -la")
         assert base == "ls"
 
     def test_sudo_detection(self):
@@ -119,6 +119,23 @@ class TestClassifierSharedWrappers:
             r'NODE_ENV="prod test" C:\tools\git.exe status > out.txt'
         )
         assert (base, sub, has_sudo) == ("git", "status", False)
+
+    def test_extract_base_command_preserves_unsafe_env_prefix(self):
+        base, sub, has_sudo = _extract_base_command("LD_PRELOAD=evil.so ls")
+        assert (base, sub, has_sudo) == ("LD_PRELOAD=evil.so", "ls", False)
+
+    def test_classify_command_requires_permission_for_unsafe_env_prefix(self):
+        result = classify_command("LD_PRELOAD=evil.so ls")
+        assert result.command_class == CommandClass.NEEDS_PERMISSION
+
+    def test_classify_command_still_allows_multiple_safe_env_prefixes(self):
+        result = classify_command('NODE_ENV="prod test" LANG=C ls -la')
+        assert result.command_class == CommandClass.SAFE
+
+    @pytest.mark.xfail(reason="Known limitation: sudo option prefixes are not normalized in this phase")
+    def test_extract_base_command_documents_sudo_option_prefix_limitation(self):
+        base, sub, has_sudo = _extract_base_command("sudo -u root ls")
+        assert (base, sub, has_sudo) == ("ls", None, True)
 
 
 class TestClassifyCommand:

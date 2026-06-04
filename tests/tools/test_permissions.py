@@ -3,6 +3,7 @@
 import pytest
 from xxcode.tools.BashTool._tokenizer import (
     extract_base_command as canonical_extract_base_command,
+    normalize_base_token as canonical_normalize_base_token,
     split_pipeline as canonical_split_pipeline,
     strip_all_safe_env_prefixes as canonical_strip_all_safe_env_prefixes,
     strip_safe_env_vars as canonical_strip_safe_env_vars,
@@ -158,12 +159,23 @@ class TestCanonicalTokenizerPrimitives:
         tokens = canonical_tokenize(r"echo hello\ world")
         assert tokens == ["echo", "hello world"]
 
-    def test_canonical_strip_safe_env_vars_preserves_env_only_input(self):
+    def test_canonical_strip_safe_env_vars_preserves_unknown_env_only_input(self):
         assert canonical_strip_safe_env_vars("FOO=bar") == "FOO=bar"
+
+    def test_canonical_strip_safe_env_vars_preserves_safe_env_without_command(self):
+        assert canonical_strip_safe_env_vars("NODE_ENV=prod") == "NODE_ENV=prod"
+        assert canonical_strip_safe_env_vars("NODE_ENV=prod   ") == "NODE_ENV=prod   "
 
     def test_canonical_strip_safe_env_vars_supports_quoted_values(self):
         result = canonical_strip_safe_env_vars('NODE_ENV="prod test" npm run build')
         assert result == "npm run build"
+
+    def test_canonical_strip_safe_env_vars_keeps_unsafe_env_prefix_before_safe_command(self):
+        result = canonical_strip_safe_env_vars("LD_PRELOAD=evil.so ls")
+        assert result == "LD_PRELOAD=evil.so ls"
+
+    def test_canonical_strip_safe_env_vars_accepts_single_char_unknown_env_name(self):
+        assert canonical_strip_safe_env_vars("v=1 ls") == "v=1 ls"
 
     def test_canonical_strip_all_safe_env_prefixes_supports_multiple_prefixes(self):
         result = canonical_strip_all_safe_env_prefixes(
@@ -176,6 +188,9 @@ class TestCanonicalTokenizerPrimitives:
             r'NODE_ENV="prod test" C:\tools\git.exe status'
         )
         assert base == "git"
+
+    def test_canonical_normalize_base_token_accepts_empty_string(self):
+        assert canonical_normalize_base_token("") == ""
 
 
 class TestAggregateCompoundPermissions:
