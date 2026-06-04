@@ -257,6 +257,7 @@ This includes:
 
 - project-instruction priority wording in the system prompt
 - trust wording that explains the role of the project-instruction file
+- the system-prompt template source in `assets/system-prompt.md`
 - attachment headings such as `Project Instructions (XXCODE.md)`
 - `_MEMORY_SECTION_TEMPLATE` text in `src/xxcode/context/builder.py`
 - the fallback memory-extraction prompt text in `src/xxcode/memory/extraction.py`
@@ -349,6 +350,9 @@ The corresponding helper and test identifiers should also be renamed:
 - local variables such as `original_claude` -> `original_project_instructions`
 - test names such as `test_main_prompt_large_claude_snapshot` -> a neutral
   project-instructions name
+- snapshot file path literals in `tests/test_prompt_snapshots.py`, such as
+  `assert_prompt_snapshot("main_large_claude.txt", text)`, must be updated to
+  the new filename as part of the same change
 
 ### 11.5 Refactor-Safety Rule For Test Doubles
 
@@ -410,18 +414,20 @@ is explicitly scoped to normalize historical materials.
 
 The implementation should proceed in this order:
 
-1. rename `load_claude_md` to `load_project_instructions` in
-   `src/xxcode/context/builder.py` and implement the `XXCODE.md`-first fallback
-   resolution rule there
-2. update all direct callers and runtime-injected prompt strings in
+1. implement the `XXCODE.md`-first, `CLAUDE.md`-fallback per-directory
+   resolution rule in `src/xxcode/context/builder.py`
+2. rename `load_claude_md` to `load_project_instructions` in
+   `src/xxcode/context/builder.py` and update all direct callers there
+3. update runtime-injected prompt strings in `assets/system-prompt.md`,
    `src/xxcode/context/builder.py`, `src/xxcode/memory/extraction.py`, and
    `src/xxcode/memory/prompts/extraction_system.md`
-3. migrate canonical fixtures to `XXCODE.md` and add explicit fallback and
+4. migrate canonical fixtures to `XXCODE.md` and add explicit fallback and
    same-directory precedence tests
-4. rename snapshot helper identifiers and the `main_large_claude.txt` snapshot,
-   then refresh snapshot contents that encode canonical wording
-5. update the active documentation list in section 12.1
-6. run a repository grep for `load_claude_md` and active-runtime
+5. rename snapshot helper identifiers, update snapshot file path references in
+   `tests/test_prompt_snapshots.py`, rename the `main_large_claude.txt`
+   snapshot, and refresh snapshot contents that encode canonical wording
+6. update the active documentation list in section 12.1
+7. run a repository grep for `load_claude_md` and active-runtime
    `CLAUDE.md` strings to catch stale maintained references
 
 This order keeps the behavioral contract and the assertions synchronized.
@@ -504,6 +510,6 @@ This work is complete when:
 6. tests cover canonical, fallback, and same-directory precedence rules
    explicitly
 7. active snapshot helpers and snapshot files use current terminology, including
-   removal of the maintained `main_large_claude` identifier
+   removal of the `main_large_claude` snapshot name and related identifiers
 8. the active documentation list in section 12.1 describes `XXCODE.md` as
    canonical and `CLAUDE.md` as compatibility-only
