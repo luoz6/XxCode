@@ -1,4 +1,16 @@
-"""Canonical shell tokenizer and command splitting helpers for BashTool."""
+"""Shared shell tokenizer — canonical implementation used by all BashTool modules.
+
+Replaces 5 separate tokenizer/pipeline-splitter implementations across
+permissions, command_semantics, sed_validation, path_validation,
+and sandbox modules (see BashTool/).
+
+Two functions:
+  tokenize(command, strip_quotes=False) → list[str]
+  split_pipeline(command)               → list[str]
+
+The &-aware pipeline splitter correctly handles redirects like 2>&1
+and &>file — it only treats & as a separator when NOT inside a redirect.
+"""
 
 from __future__ import annotations
 
@@ -59,8 +71,13 @@ def tokenize(command: str, *, strip_quotes: bool = False) -> list[str]:
     while i < n:
         ch = command[i]
         if ch == "\\" and i + 1 < n:
-            current.append(command[i + 1])
-            i += 2
+            next_ch = command[i + 1]
+            if next_ch in (" ", "\t", "\\", "'", '"'):
+                current.append(next_ch)
+                i += 2
+                continue
+            current.append(ch)
+            i += 1
             continue
         if ch == "'" and not in_double:
             in_single = not in_single
@@ -229,20 +246,29 @@ def normalize_base_token(token: str) -> str:
 
 
 def extract_base_command(command: str) -> str | None:
-    """Extract the normalized base command name from a command line."""
+    """Extract the normalized base command name from a command line.
+
+    Strips all safe env-var prefixes first, tokenizes the remaining command,
+    skips one privilege prefix (`sudo`, `doas`, `pkexec`) when present, and
+    normalizes the resulting base token by removing path prefixes and
+    executable extensions.
+
+    Canonical implementation used by sandbox.py, command_semantics.py,
+    and security/classifier.py.
+    """
     cleaned = strip_all_safe_env_prefixes(command.strip())
     if not cleaned:
         return None
 
-    split = _split_first_shell_token(cleaned)
-    if split is None:
+    tokens = tokenize(cleaned)
+    if not tokens:
         return None
-    base, rest = split
+
+    base = tokens[0]
 
     if base in ("sudo", "doas", "pkexec"):
-        next_split = _split_first_shell_token(rest)
-        if next_split is None:
+        if len(tokens) == 1:
             return None
-        base, _rest = next_split
+        base = tokens[1]
 
     return normalize_base_token(base)
