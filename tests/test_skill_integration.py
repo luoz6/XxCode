@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -17,6 +18,12 @@ from xxcode.skills.models import SkillFrontmatter, SkillSource, SkillSpec
 from xxcode.tools import ToolCall
 from xxcode.tools.file_read import ReadFileTool
 from xxcode.tools.file_write import WriteFileTool
+from xxcode.tools.mcp import (
+    McpTool,
+    ListMcpResourcesTool,
+    ReadMcpResourceTool,
+    build_mcp_input_model,
+)
 from xxcode.tools.registry import ToolRegistry
 from xxcode.ui.repl import run_repl
 from xxcode.ui.session import SessionStore
@@ -145,8 +152,10 @@ class _SkillToolClient:
 class _FakeConsole:
     def __init__(self):
         self.lines: list[str] = []
+        self.calls: list[tuple[tuple[object, ...], dict[str, Any]]] = []
 
     def print(self, *args, **kwargs):
+        self.calls.append((args, kwargs))
         self.lines.append(" ".join(str(arg) for arg in args))
 
     def clear(self):
@@ -203,6 +212,54 @@ class _FakeReplUI:
 
     def shutdown(self, final_snapshot) -> None:
         self.frames.append(final_snapshot)
+
+
+def _render_first_table(console: _FakeConsole) -> str:
+    import io
+    from rich.console import Console as RichConsole
+
+    for args, _kwargs in console.calls:
+        if args and hasattr(args[0], "columns"):
+            buf = io.StringIO()
+            RichConsole(file=buf, force_terminal=False, width=140).print(args[0])
+            return buf.getvalue()
+    pytest.fail("No Rich table was printed")
+
+
+def _register_demo_mcp_tools(registry: ToolRegistry) -> None:
+    active_tool = McpTool.from_definition(
+        public_name="mcp__demo__search",
+        server_name="demo",
+        tool_name="search",
+        description="[MCP Server: demo] Search docs",
+        input_schema=build_mcp_input_model("search", {"type": "object"}),
+        raw_schema={"type": "object"},
+        should_defer=True,
+        search_hint="mcp demo search docs",
+    )
+    registry.register(active_tool)
+    assert registry.activate_tool("mcp__demo__search") is not None
+
+    deferred_tool = McpTool.from_definition(
+        public_name="mcp__demo__apply",
+        server_name="demo",
+        tool_name="apply",
+        description="[MCP Server: demo] Apply changes",
+        input_schema=build_mcp_input_model("apply", {"type": "object"}),
+        raw_schema={"type": "object"},
+        should_defer=True,
+        search_hint="mcp demo apply changes",
+    )
+    registry.register(deferred_tool)
+
+    registry.register_class(
+        ListMcpResourcesTool,
+        search_hint="mcp list resources",
+    )
+    registry.register_class(
+        ReadMcpResourceTool,
+        search_hint="mcp resource read",
+    )
 
 
 class _ContractAwareUi:
@@ -350,6 +407,7 @@ def test_manual_project_skill_shell_approval_streams_in_same_submit_turn(tmp_pat
         "Skill 'review' (project skill) is active for this turn.",
     ) >= 0
     assert "/review src/app.py" not in str(client.messages_by_call[0])
+    assert all(tool["name"] != "Skill" for tool in client.tools_by_call[0])
 
 
 def test_bundled_skill_is_available_without_local_skill_directories(tmp_path):
@@ -405,6 +463,34 @@ def test_manual_skill_invocation_respects_paths_visibility(tmp_path):
 
     assert [event.type for event in events] == ["error", "done"]
     assert "Unknown command: /review" in events[0].content
+
+
+@pytest.mark.parametrize("command_name", ["skill", "mcp"])
+def test_submit_message_keeps_builtin_commands_out_of_skill_resolution(tmp_path, command_name):
+    _write_skill(
+        tmp_path,
+        command_name,
+        "description: Name-collision skill.\n",
+        "This skill should never run for the built-in command.",
+        source=SkillSource.PROJECT,
+    )
+    client = _CaptureTextClient(text="should-not-run")
+    engine = _make_query_engine(tmp_path, client=client)
+
+    events = _submit_events(engine, f"/{command_name}")
+
+    assert [event.type for event in events] == ["text", "done"]
+    assert "handled by the REPL" in events[0].content
+    assert client.calls == 0
+
+
+def test_submit_message_sessions_is_no_longer_repl_owned(tmp_path):
+    engine = _make_query_engine(tmp_path)
+
+    events = _submit_events(engine, "/sessions")
+
+    assert [event.type for event in events] == ["error", "done"]
+    assert "Unknown command: /sessions" in events[0].content
 
 
 def test_manual_skill_invocation_uses_runtime_context_cwd(tmp_path):
@@ -504,6 +590,127 @@ def test_repl_manual_skill_invocation_uses_runtime_context_cwd(tmp_path):
     assert all("Unknown command" not in line for line in ui.console.lines)
 
 
+def test_repl_skill_command_lists_visible_skills_for_runtime_cwd(tmp_path):
+    _write_skill(
+        tmp_path,
+        "component-audit",
+        (
+            "description: Review React components.\n"
+            "paths:\n"
+            "  - src/components/**\n"
+        ),
+        "Inspect the selected component.",
+        source=SkillSource.PROJECT,
+    )
+    visible_cwd = tmp_path / "src" / "components"
+    visible_cwd.mkdir(parents=True)
+
+    config = _make_config(tmp_path)
+    engine = _make_query_engine(tmp_path)
+    engine.core_engine._context["cwd"] = str(visible_cwd)
+    ui = _FakeReplUI(["/skill", "/quit"])
+
+    asyncio.run(
+        run_repl(
+            engine,
+            ui,
+            config,
+            skill_registry=engine.skill_registry,
+        )
+    )
+
+    table_text = _render_first_table(ui.console)
+    assert "Visible Skills" in table_text
+    assert "/component-audit" in table_text
+    assert "Review React components." in table_text
+    assert "project" in table_text
+
+
+def test_repl_skill_command_reports_disabled_skills(tmp_path):
+    config = _make_config(tmp_path)
+    config.skills_enabled = False
+    engine = QueryEngine(config)
+    ui = _FakeReplUI(["/skill", "/quit"])
+
+    asyncio.run(
+        run_repl(
+            engine,
+            ui,
+            config,
+            skill_registry=None,
+        )
+    )
+
+    assert any("Skills are disabled." in line for line in ui.console.lines)
+
+
+def test_repl_mcp_command_lists_registered_and_deferred_tools(tmp_path):
+    config = _make_config(tmp_path)
+    engine = _make_query_engine(tmp_path)
+    _register_demo_mcp_tools(engine.core_engine._registry)
+    ui = _FakeReplUI(["/mcp", "/quit"])
+
+    asyncio.run(
+        run_repl(
+            engine,
+            ui,
+            config,
+            skill_registry=engine.skill_registry,
+        )
+    )
+
+    table_text = _render_first_table(ui.console)
+    assert "Registered MCP Tools" in table_text
+    assert "mcp__demo__search" in table_text
+    assert "registered" in table_text
+    assert "mcp__demo__apply" in table_text
+    assert "deferred" in table_text
+    assert "mcp_list_resources" in table_text
+    assert "mcp_read_resource" in table_text
+    assert "resource" in table_text
+
+
+def test_repl_mcp_command_reports_empty_registry(tmp_path):
+    config = _make_config(tmp_path)
+    engine = _make_query_engine(tmp_path)
+    ui = _FakeReplUI(["/mcp", "/quit"])
+
+    asyncio.run(
+        run_repl(
+            engine,
+            ui,
+            config,
+            skill_registry=engine.skill_registry,
+        )
+    )
+
+    assert any("No registered MCP tools in current session." in line for line in ui.console.lines)
+
+
+class _DuplicateMcpRegistry:
+    def list_tools(self):
+        return [type("Tool", (), {"name": "mcp__demo__search"})()]
+
+    def get_deferred_tools(self):
+        return {
+            "mcp__demo__search": type("Tool", (), {"name": "mcp__demo__search"})(),
+            "mcp__demo__apply": type("Tool", (), {"name": "mcp__demo__apply"})(),
+        }
+
+
+def test_cmd_mcp_prefers_registered_status_for_duplicate_names():
+    from xxcode.ui.repl import _cmd_mcp
+
+    ui = _FakeReplUI([])
+    _cmd_mcp(ui.console, registry=_DuplicateMcpRegistry())
+
+    table_text = _render_first_table(ui.console)
+    assert table_text.count("mcp__demo__search") == 1
+    assert "mcp__demo__apply" in table_text
+    assert "registered" in table_text
+    assert "deferred" in table_text
+
+
 def test_ui_runtime_updates_frames_for_task_snapshots(tmp_path):
     config = _make_config(tmp_path)
     engine = QueryEngine(config)
@@ -571,6 +778,30 @@ def test_ui_runtime_records_permission_audit(tmp_path):
     assert runtime.frame.permission_audit[-1]["decision"] == "no"
     assert runtime.frame.permission_audit[-1]["risk_level"] == "high"
     assert ui.modals[0]["tool_name"] == "write_file"
+
+
+def test_ui_runtime_permission_audit_reads_backend_risk_level_from_phase1_modal_state(tmp_path):
+    config = _make_config(tmp_path)
+    engine = QueryEngine(config)
+    ui = _FakeReplUI([])
+
+    from xxcode.ui.runtime import UiEvent, UiRuntime
+
+    runtime = UiRuntime(engine=engine, ui=ui)
+    runtime.frame.modal_state = {
+        "tool_name": "write_file",
+        "backend_risk_level": "normal",
+        "dangerous": False,
+        "target_summary": str(tmp_path / "x.txt"),
+    }
+
+    runtime._record_permission_audit(
+        UiEvent(type="permission_requested", metadata={}),
+        "deny",
+    )
+
+    assert runtime.frame.permission_audit[-1]["risk_level"] == "normal"
+    assert runtime.frame.permission_audit[-1]["decision"] == "deny"
 
 
 def test_ui_runtime_coalesces_updates_before_flush(tmp_path):
@@ -808,6 +1039,26 @@ def test_manual_inline_skill_restricts_tool_schemas_for_that_turn(tmp_path):
     asyncio.run(_collect_submit_events(query_engine, "/review src/app.py"))
 
     assert [tool["name"] for tool in client.tools_by_call[0]] == ["read_file"]
+
+
+def test_manual_inline_skill_without_allowlist_hides_skill_tool_for_that_turn(tmp_path):
+    _write_skill(
+        tmp_path,
+        "review",
+        "description: Review current code changes.\n",
+        "Review only with $ARGUMENTS",
+        source=SkillSource.USER,
+    )
+    config = _make_config(tmp_path)
+    query_engine = QueryEngine(config)
+    client = _CaptureTextClient(text="done")
+    query_engine.core_engine._build_client = lambda max_tokens=None: client
+
+    asyncio.run(_collect_submit_events(query_engine, "/review src/app.py"))
+
+    tool_names = [tool["name"] for tool in client.tools_by_call[0]]
+    assert "Skill" not in tool_names
+    assert "read_file" in tool_names
 
 
 def test_manual_fork_skill_returns_subagent_result_without_main_model_turn(

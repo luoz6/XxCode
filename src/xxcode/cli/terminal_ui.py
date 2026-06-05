@@ -52,7 +52,9 @@ from .ui_shared import (
     TOOLBAR_SEPARATOR,
     build_session_toolbar,
     calculate_session_cost,
+    detect_display_mode,
     format_cwd_for_display,
+    get_display_symbols,
     normalize_permission_answer,
 )
 
@@ -103,7 +105,14 @@ def _create_keybindings() -> KeyBindings:
 
 # ── Toolbar builder ────────────────────────────────────────────────
 
-def _build_toolbar(state, config: Config | None = None):
+def _current_display_symbols(console: Console | None = None) -> dict[str, str]:
+    encoding = None
+    if console is not None and getattr(console, "file", None) is not None:
+        encoding = getattr(console.file, "encoding", None)
+    return get_display_symbols(detect_display_mode(encoding))
+
+
+def _build_toolbar(state, config: Config | None = None, *, separator: str = TOOLBAR_SEPARATOR):
     """Build bottom-toolbar text from session state."""
     from ..api.client import get_pricing
 
@@ -119,6 +128,7 @@ def _build_toolbar(state, config: Config | None = None):
         state,
         input_price_per_1k=input_price,
         output_price_per_1k=output_price,
+        separator=separator,
     )
     if not toolbar:
         return ""
@@ -355,12 +365,18 @@ class XxCodeTerminalUI(TerminalUiBackendMixin):
         if not self._has_prompt_toolkit:
             return await self._basic_input(state)
 
+        symbols = _current_display_symbols(self.console)
         mode = "yolo" if _is_yolo(state) else "normal"
-        symbol = PROMPT_SYMBOLS[mode]
+        symbol_key = "prompt.yolo" if mode == "yolo" else "prompt.normal"
+        symbol = symbols[symbol_key]
         style_name = f"class:prompt.{mode}"
         prompt_parts = [(style_name, f"{symbol} ")]
 
-        toolbar = _build_toolbar(state, self.config)
+        toolbar = _build_toolbar(
+            state,
+            self.config,
+            separator=symbols["toolbar.separator"],
+        )
 
         try:
             text = await self.prompt_session.prompt_async(
@@ -375,7 +391,8 @@ class XxCodeTerminalUI(TerminalUiBackendMixin):
 
     async def _basic_input(self, state=None) -> str | None:
         """Fallback input when prompt_toolkit is unavailable."""
-        symbol = "⚡" if _is_yolo(state) else "❯"
+        symbols = _current_display_symbols(self.console)
+        symbol = symbols["prompt.yolo"] if _is_yolo(state) else symbols["prompt.normal"]
         try:
             loop = asyncio.get_running_loop()
             text = await loop.run_in_executor(None, lambda: input(f"{symbol} "))
@@ -402,12 +419,13 @@ class XxCodeTerminalUI(TerminalUiBackendMixin):
 
         selected_index = [0]
         result: list[str | None] = [None]
+        symbols = _current_display_symbols(self.console)
 
         def _get_fragments():
             fragments: list[tuple[str, str]] = []
             for i, (_key, label) in enumerate(display_values):
                 is_selected = i == selected_index[0]
-                prefix = "❯ " if is_selected else "  "  # ❯
+                prefix = f"{symbols['marker.pointer']} " if is_selected else "  "
                 base_style = (
                     "class:picklist.selected"
                     if is_selected
@@ -537,13 +555,14 @@ class XxCodeTerminalUI(TerminalUiBackendMixin):
             dangerous: Hint from the engine (shell commands etc).
 
         Returns:
-            One of: 'yes', 'no', 'always', 'deny_all'
+            One of: 'once', 'always', 'deny'
         """
         risk = tool_risk_level(tc.name, tc.input)
         border = RISK_BORDERS[risk]
         label = RISK_LABELS[risk]
         display = TOOL_DISPLAY.get(tc.name, tc.name)
-        icon = TOOL_ICONS.get(tc.name, "\U0001F527")  # 🔧
+        symbols = _current_display_symbols(self.console)
+        icon = symbols.get(f"tool.{tc.name}", symbols["tool.default"])
 
         # Build content lines
         content_lines: list[str] = []
@@ -593,24 +612,24 @@ class XxCodeTerminalUI(TerminalUiBackendMixin):
         # Prompt for choice
         if self._has_prompt_toolkit and self._perm_session is not None:
             choice_prompt: list[tuple[str, str]] = [
-                ("bold yellow", "  ? Allow? "),
-                ("dim", "[y] once  [n] deny  [a] always  [d] never  "),
+                ("bold yellow", "  ? 允许操作？ "),
+                ("dim", "[y] 允许一次  [a] 本会话总是允许  [n] 拒绝  "),
             ]
             try:
                 answer = await self._perm_session.prompt_async(choice_prompt)
                 answer = answer.strip().lower()
             except (KeyboardInterrupt, EOFError):
-                return "no"
+                return "deny"
         else:
             loop = asyncio.get_running_loop()
             try:
                 answer = await loop.run_in_executor(
                     None,
-                    lambda: input("  ? Allow? [y] once  [n] deny  [a] always  [d] never: "),
+                    lambda: input("  ? 允许操作？ [y] 允许一次  [a] 本会话总是允许  [n] 拒绝: "),
                 )
                 answer = answer.strip().lower()
             except (KeyboardInterrupt, EOFError):
-                return "no"
+                return "deny"
 
         return normalize_permission_answer(answer)
 
@@ -857,20 +876,22 @@ class XxCodeTerminalUI(TerminalUiBackendMixin):
                 return
 
         # Fallback: render individually (no registry wired).
+        symbols = _current_display_symbols(self.console)
+        permission_marker = symbols["marker.permission"]
         for _name, raw_input in buffered:
             display = TOOL_DISPLAY.get(_name, _name)
-            icon = TOOL_ICONS.get(_name, "\U0001F527")
+            icon = symbols.get(f"tool.{_name}", symbols["tool.default"])
             arg = _extract_key_arg(_name, raw_input)
             self._active_tool_count += 1
             self.console.print()
             if arg:
                 self.console.print(
-                    f"  [bold bright_cyan]⏺[/bold bright_cyan] {icon} [bold]{display}[/bold]([dim]{arg}[/dim])",
+                    f"  [bold bright_cyan]{permission_marker}[/bold bright_cyan] {icon} [bold]{display}[/bold]([dim]{arg}[/dim])",
                     markup=True,
                 )
             else:
                 self.console.print(
-                    f"  [bold bright_cyan]⏺[/bold bright_cyan] {icon} [bold]{display}[/bold]",
+                    f"  [bold bright_cyan]{permission_marker}[/bold bright_cyan] {icon} [bold]{display}[/bold]",
                     markup=True,
                 )
 
@@ -883,18 +904,20 @@ class XxCodeTerminalUI(TerminalUiBackendMixin):
         For multiple tools: multi-line block with count header.
         """
         display = TOOL_DISPLAY.get(tool_name, tool_name)
-        icon = TOOL_ICONS.get(tool_name, "\U0001F527")
+        symbols = _current_display_symbols(self.console)
+        permission_marker = symbols["marker.permission"]
+        icon = symbols.get(f"tool.{tool_name}", symbols["tool.default"])
 
         self.console.print()
         if count == 1:
             self.console.print(
-                f"  [bold bright_cyan]⏺[/bold bright_cyan] {icon} [bold]{display}[/bold] "
+                f"  [bold bright_cyan]{permission_marker}[/bold bright_cyan] {icon} [bold]{display}[/bold] "
                 f"[dim]({display_text.split(chr(10))[-1] if chr(10) in display_text else display_text})[/dim]",
                 markup=True,
             )
         else:
             self.console.print(
-                f"  [bold bright_cyan]⏺[/bold bright_cyan] {icon} [bold]{display}[/bold] "
+                f"  [bold bright_cyan]{permission_marker}[/bold bright_cyan] {icon} [bold]{display}[/bold] "
                 f"[dim cyan]({count} calls)[/dim cyan]",
                 markup=True,
             )
@@ -905,15 +928,18 @@ class XxCodeTerminalUI(TerminalUiBackendMixin):
         """Render tool result: ✓ success or ✗ error with compact preview."""
         meta = event.metadata
         self._active_tool_count = max(0, self._active_tool_count - 1)
+        symbols = _current_display_symbols(self.console)
+        success_marker = symbols["marker.success"]
+        error_marker = symbols["marker.error"]
 
         if meta.get("denied"):
             self._tool_errors += 1
-            self.console.print("  [bold red]✗ Denied by user[/bold red]", markup=True)
+            self.console.print(f"  [bold red]{error_marker} Denied by user[/bold red]", markup=True)
             return
 
         if meta.get("is_error"):
             self._tool_errors += 1
-            self.console.print("  [bold red]✗ Error[/bold red]", markup=True)
+            self.console.print(f"  [bold red]{error_marker} Error[/bold red]", markup=True)
             result_text = meta.get("result", "")
             if result_text:
                 first_line = result_text.strip().split("\n")[0][:200]
@@ -926,7 +952,7 @@ class XxCodeTerminalUI(TerminalUiBackendMixin):
             preview = result_text.strip().split("\n")[0][:300]
             if len(result_text) > 300 or "\n" in result_text:
                 preview += " ..."
-            self.console.print(f"  [dim green]✓[/dim green] [dim]{preview}[/dim]", markup=True)
+            self.console.print(f"  [dim green]{success_marker}[/dim green] [dim]{preview}[/dim]", markup=True)
 
     def _render_error(self, event: StreamEvent) -> None:
         """Render an error as a red-bordered panel."""
@@ -969,17 +995,19 @@ class XxCodeTerminalUI(TerminalUiBackendMixin):
         risk = tool_risk_level(tc.name, tc.input)
         style = RISK_BORDERS.get(risk, "yellow")
         display = TOOL_DISPLAY.get(tc.name, tc.name)
-        icon = TOOL_ICONS.get(tc.name, "\U0001F527")
+        symbols = _current_display_symbols(self.console)
+        permission_marker = symbols["marker.permission"]
+        icon = symbols.get(f"tool.{tc.name}", symbols["tool.default"])
         arg = _extract_key_arg(tc.name, tc.input)
         self.console.print()
         if arg:
             self.console.print(
-                f"  [bold {style}]⏺ {icon} {display}({arg})[/bold {style}]",
+                f"  [bold {style}]{permission_marker} {icon} {display}({arg})[/bold {style}]",
                 markup=True,
             )
         else:
             self.console.print(
-                f"  [bold {style}]⏺ {icon} {display}[/bold {style}]",
+                f"  [bold {style}]{permission_marker} {icon} {display}[/bold {style}]",
                 markup=True,
             )
 

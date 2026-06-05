@@ -1,6 +1,7 @@
 """Tests for background memory extraction system."""
 
 import asyncio
+import logging
 import tempfile
 from pathlib import Path
 
@@ -77,6 +78,30 @@ class TestShouldExtract:
         )
         ctrl = ExtractionController.__new__(ExtractionController)
         assert ctrl.should_extract(state) is True
+
+    @pytest.mark.parametrize(
+        ("state", "expected_reason"),
+        [
+            (
+                AgentState(user_turn_count=2, last_extraction_user_turn=0),
+                "turns since last extraction",
+            ),
+            (
+                AgentState(
+                    user_turn_count=10,
+                    memory_writes_since_extraction=True,
+                ),
+                "main agent wrote memory",
+            ),
+        ],
+    )
+    def test_logs_reason_when_skipping(self, state, expected_reason, caplog):
+        ctrl = ExtractionController.__new__(ExtractionController)
+
+        with caplog.at_level(logging.DEBUG):
+            assert ctrl.should_extract(state) is False
+
+        assert expected_reason in caplog.text
 
 
 # ── build_extraction_prompt tests ─────────────────────────────────

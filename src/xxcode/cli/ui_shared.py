@@ -5,27 +5,95 @@ from __future__ import annotations
 from typing import Any
 
 
+RICH_UNICODE = "rich_unicode"
+ASCII_SAFE = "ascii_safe"
+
+PHASE1_PERMISSION_ACTION_LABELS = ("允许一次", "本会话总是允许", "拒绝")
+DISPLAY_RISK_LABELS = {
+    "low": "低风险",
+    "medium": "需确认",
+    "high": "高风险",
+}
+
+_RICH_SYMBOLS = {
+    "prompt.normal": "❯",
+    "prompt.yolo": "⚡",
+    "toolbar.separator": " │ ",
+    "marker.success": "✓",
+    "marker.error": "✗",
+    "marker.pointer": "❯",
+    "marker.permission": "⏺",
+    "tool.read_file": "📖",
+    "tool.write_file": "✍️",
+    "tool.edit_file": "📝",
+    "tool.grep_search": "🔍",
+    "tool.glob_match": "🔎",
+    "tool.run_shell": "💻",
+    "tool.default": "🔧",
+}
+
+_ASCII_SYMBOLS = {
+    "prompt.normal": ">",
+    "prompt.yolo": "!",
+    "toolbar.separator": " | ",
+    "marker.success": "OK",
+    "marker.error": "X",
+    "marker.pointer": ">",
+    "marker.permission": "*",
+    "tool.read_file": "[R]",
+    "tool.write_file": "[W]",
+    "tool.edit_file": "[E]",
+    "tool.grep_search": "[G]",
+    "tool.glob_match": "[O]",
+    "tool.run_shell": "[S]",
+    "tool.default": "[T]",
+}
+
+
 YOLO_LABEL = "\u26a1 YOLO"
-TOOLBAR_SEPARATOR = " \u2502 "
+TOOLBAR_SEPARATOR = _RICH_SYMBOLS["toolbar.separator"]
+
+
+def detect_display_mode(encoding: str | None) -> str:
+    normalized = (encoding or "").strip().lower()
+    if normalized in ("utf-8", "utf8", "utf_8", "cp65001"):
+        return RICH_UNICODE
+    return ASCII_SAFE
+
+
+def get_display_symbols(mode: str) -> dict[str, str]:
+    if mode == RICH_UNICODE:
+        return dict(_RICH_SYMBOLS)
+    return dict(_ASCII_SYMBOLS)
+
+
+def translate_backend_risk_level(level: str) -> str:
+    normalized = (level or "").strip().lower()
+    if normalized == "high":
+        return "high"
+    if normalized == "normal":
+        return "medium"
+    if normalized in ("low", "medium", "high"):
+        return normalized
+    return "medium"
 
 
 def normalize_permission_answer(answer: str) -> str:
     """Normalize free-form permission input to the canonical decision ids."""
     normalized = (answer or "").strip().lower()
     if not normalized:
-        return "no"
+        return "deny"
 
     direct_map = {
-        "y": "yes",
-        "yes": "yes",
-        "n": "no",
-        "no": "no",
+        "y": "once",
+        "yes": "once",
+        "n": "deny",
+        "no": "deny",
         "a": "always",
         "always": "always",
-        "d": "deny_all",
-        "deny": "deny_all",
-        "deny_all": "deny_all",
-        "never": "deny_all",
+        "d": "deny",
+        "deny": "deny",
+        "never": "deny",
     }
     mapped = direct_map.get(normalized)
     if mapped is not None:
@@ -33,14 +101,10 @@ def normalize_permission_answer(answer: str) -> str:
 
     first = normalized[0]
     if first == "y":
-        return "yes"
-    if first == "n":
-        return "no"
+        return "once"
     if first == "a":
         return "always"
-    if first == "d":
-        return "deny_all"
-    return "no"
+    return "deny"
 
 
 def calculate_session_cost(
@@ -70,6 +134,7 @@ def build_session_toolbar(
     *,
     input_price_per_1k: float,
     output_price_per_1k: float,
+    separator: str = TOOLBAR_SEPARATOR,
 ) -> str:
     """Build a compact bottom-toolbar summary from session state."""
     if state is None:
@@ -102,4 +167,4 @@ def build_session_toolbar(
     if permission_state is not None and getattr(permission_state, "yolo_mode", False):
         parts.append(YOLO_LABEL)
 
-    return TOOLBAR_SEPARATOR.join(parts)
+    return separator.join(parts)

@@ -93,10 +93,10 @@ def test_prompt_toolkit_fullscreen_permission_answers_accept_first_letter_fallba
     config = _make_config(tmp_path, ui_backend="prompt_toolkit_fullscreen")
     ui = PromptToolkitFullscreenUI(config)
 
-    assert ui._normalize_permission_answer("yep") == "yes"
+    assert ui._normalize_permission_answer("yep") == "once"
     assert ui._normalize_permission_answer("always please") == "always"
-    assert ui._normalize_permission_answer("deny everything") == "deny_all"
-    assert ui._normalize_permission_answer("") == "no"
+    assert ui._normalize_permission_answer("deny everything") == "deny"
+    assert ui._normalize_permission_answer("") == "deny"
 
 
 def test_shell_risk_defaults_to_low_for_non_destructive_commands():
@@ -227,6 +227,47 @@ def test_legacy_terminal_get_input_only_uses_prompt_symbol_and_toolbar(tmp_path)
     ]
 
 
+def test_legacy_terminal_get_input_uses_ascii_safe_prompt_symbol_when_configured(tmp_path, monkeypatch):
+    class _FakePromptSession:
+        def __init__(self):
+            self.calls = []
+
+        async def prompt_async(self, prompt_parts, bottom_toolbar=None):
+            self.calls.append((prompt_parts, bottom_toolbar))
+            return "demo"
+
+    config = _make_config(tmp_path, api_model="claude-sonnet-4-6")
+    ui = XxCodeTerminalUI(config)
+    ui.prompt_session = _FakePromptSession()
+    ui._has_prompt_toolkit = True
+    monkeypatch.setattr("xxcode.cli.terminal_ui._current_display_symbols", lambda console=None: {
+        "prompt.normal": ">",
+        "prompt.yolo": "!",
+        "toolbar.separator": " | ",
+        "marker.permission": "*",
+        "marker.success": "OK",
+        "marker.error": "X",
+        "tool.default": "[T]",
+    })
+
+    result = asyncio.run(ui.get_input(_make_toolbar_state(1, 0, 0, False)))
+
+    assert result == "demo"
+    assert ui.prompt_session.calls[0][0] == [("class:prompt.normal", "> ")]
+
+
+def test_legacy_terminal_toolbar_uses_ascii_safe_separator_when_requested(tmp_path):
+    config = _make_config(tmp_path, api_model="claude-sonnet-4-6")
+    state = _make_toolbar_state(5, 9000, 3000, True)
+
+    fragments = _build_toolbar(state, config, separator=" | ")
+
+    assert fragments == [
+        ("class:bottom-toolbar", "T5 | 12K tok | $0.0720 | "),
+        ("class:bottom-toolbar.yolo", YOLO_LABEL),
+    ]
+
+
 def test_prompt_toolkit_fullscreen_ui_updates_internal_frame_state(tmp_path):
     config = _make_config(tmp_path, ui_backend="prompt_toolkit_fullscreen")
     ui = PromptToolkitFullscreenUI(config)
@@ -270,25 +311,134 @@ def test_prompt_toolkit_fullscreen_ui_updates_internal_frame_state(tmp_path):
     ui.update(frame)
     ui.show_modal(
         {
+            "kind": "tool_permission",
             "tool_name": "write_file",
-            "risk_level": "high",
             "target_summary": str(tmp_path / "demo.txt"),
+            "backend_risk_level": "high",
+            "display_risk_level": "high",
+            "summary_lines": ["demo content"],
+            "action_labels": ["允许一次", "本会话总是允许", "拒绝"],
         }
     )
 
     assert "worker-1" in ui._tasks_text
     assert "Recent Task Activity:" in ui._tasks_text
     assert "Worker completed request." in ui._tasks_text
+    assert "对话记录" in ui._transcript_control.text
     assert "hello" in ui._transcript_control.text
     assert "[tool] read_file" in ui._transcript_control.text
+    assert "任务概览" in ui._tasks_control.text
     assert "write_file" in ui._modal_text
-    assert "Permission request pending" in ui._status_control.text
-    assert "Input Disabled:" in ui._input_meta_control.text
+    assert "权限请求待处理" in ui._status_control.text
+    assert "输入已锁定：" in ui._input_meta_control.text
     assert ui._input_field.buffer.read_only is True
 
     ui.clear_modal()
     assert ui._modal_text == ""
     assert "careful" in ui._status_control.text
+
+
+def test_prompt_toolkit_fullscreen_visible_panes_skip_modal_until_shown(tmp_path):
+    config = _make_config(tmp_path, ui_backend="prompt_toolkit_fullscreen")
+    ui = PromptToolkitFullscreenUI(config)
+
+    assert ui._visible_panes() == ["transcript", "tasks", "input"]
+
+    ui.show_modal(
+        {
+            "kind": "tool_permission",
+            "tool_name": "write_file",
+            "target_summary": str(tmp_path / "demo.txt"),
+            "backend_risk_level": "high",
+            "display_risk_level": "high",
+            "summary_lines": ["demo"],
+            "action_labels": ["允许一次", "本会话总是允许", "拒绝"],
+        }
+    )
+
+    assert ui._visible_panes() == ["transcript", "tasks", "modal", "input"]
+
+
+def test_prompt_toolkit_fullscreen_cycle_focus_skips_hidden_modal(tmp_path):
+    config = _make_config(tmp_path, ui_backend="prompt_toolkit_fullscreen")
+    ui = PromptToolkitFullscreenUI(config)
+
+    assert ui._focused_pane == "input"
+
+    ui._cycle_focus(1)
+    assert ui._focused_pane == "transcript"
+
+    ui._cycle_focus(1)
+    assert ui._focused_pane == "tasks"
+
+    ui._cycle_focus(1)
+    assert ui._focused_pane == "input"
+
+
+def test_prompt_toolkit_fullscreen_cycle_focus_includes_modal_when_visible(tmp_path):
+    config = _make_config(tmp_path, ui_backend="prompt_toolkit_fullscreen")
+    ui = PromptToolkitFullscreenUI(config)
+    ui.show_modal(
+        {
+            "kind": "tool_permission",
+            "tool_name": "write_file",
+            "target_summary": str(tmp_path / "demo.txt"),
+            "backend_risk_level": "high",
+            "display_risk_level": "high",
+            "summary_lines": ["demo"],
+            "action_labels": ["允许一次", "本会话总是允许", "拒绝"],
+        }
+    )
+
+    assert ui._focused_pane == "modal"
+
+    ui._cycle_focus(1)
+    assert ui._focused_pane == "input"
+
+    ui._cycle_focus(-1)
+    assert ui._focused_pane == "modal"
+
+
+def test_prompt_toolkit_fullscreen_slice_viewport_text_uses_scroll_offset(tmp_path):
+    config = _make_config(tmp_path, ui_backend="prompt_toolkit_fullscreen")
+    ui = PromptToolkitFullscreenUI(config)
+    text = "l1\nl2\nl3\nl4\nl5"
+
+    visible = ui._slice_viewport_text(text, offset=1, height=3)
+
+    assert visible == "l2\nl3\nl4"
+
+
+def test_prompt_toolkit_fullscreen_scroll_offset_clamps_to_available_lines(tmp_path):
+    config = _make_config(tmp_path, ui_backend="prompt_toolkit_fullscreen")
+    ui = PromptToolkitFullscreenUI(config)
+
+    ui._pane_scroll_offsets["transcript"] = 0
+    ui._scroll_pane("transcript", text="a\nb\nc", delta=10, height=2)
+    assert ui._pane_scroll_offsets["transcript"] == 1
+
+    ui._scroll_pane("transcript", text="a\nb\nc", delta=-10, height=2)
+    assert ui._pane_scroll_offsets["transcript"] == 0
+
+
+def test_prompt_toolkit_fullscreen_scroll_active_pane_updates_transcript_offset(tmp_path):
+    config = _make_config(tmp_path, ui_backend="prompt_toolkit_fullscreen")
+    ui = PromptToolkitFullscreenUI(config)
+    ui._focused_pane = "transcript"
+    long_text = "\n".join(f"l{i}" for i in range(1, 26))
+    ui._transcript_chunks = [long_text]
+    ui._transcript_text_cache = long_text
+
+    ui._scroll_active_pane(1)
+
+    assert ui._pane_scroll_offsets["transcript"] == 1
+
+
+def test_prompt_toolkit_fullscreen_slice_viewport_text_handles_empty_text(tmp_path):
+    config = _make_config(tmp_path, ui_backend="prompt_toolkit_fullscreen")
+    ui = PromptToolkitFullscreenUI(config)
+
+    assert ui._slice_viewport_text("", offset=0, height=3) == ""
 
 
 def test_prompt_toolkit_fullscreen_ui_preserves_stable_transcript_prefix(tmp_path):
@@ -313,7 +463,7 @@ def test_prompt_toolkit_fullscreen_ui_preserves_stable_transcript_prefix(tmp_pat
     ui.update(second)
 
     assert ui._transcript_chunks == ["hello world", "[tool] read_file\n"]
-    assert ui._transcript_control.text == "hello world[tool] read_file\n"
+    assert ui._transcript_control.text == "  对话记录\nhello world[tool] read_file"
 
 
 def test_prompt_toolkit_fullscreen_ui_merges_adjacent_assistant_and_thinking_entries(tmp_path):
@@ -333,10 +483,10 @@ def test_prompt_toolkit_fullscreen_ui_merges_adjacent_assistant_and_thinking_ent
 
     assert ui._transcript_chunks == [
         "hello world",
-        "[thinking] plan more",
-        "[tool result] ok\n",
+        "[thinking collapsed]",
+        "工具结果: ok\n",
     ]
-    assert ui._transcript_control.text == "hello world[thinking] plan more[tool result] ok\n"
+    assert ui._transcript_control.text == "  对话记录\nhello world[thinking collapsed]工具结果: ok"
 
 
 def test_prompt_toolkit_fullscreen_ui_preserves_stable_task_prefix(tmp_path):
@@ -393,6 +543,307 @@ def test_prompt_toolkit_fullscreen_ui_preserves_stable_task_prefix(tmp_path):
     assert ui._tasks_text.startswith("Task Snapshots:\n- worker-1 [running]")
 
 
+def test_prompt_toolkit_fullscreen_transcript_control_adds_region_heading(tmp_path):
+    config = _make_config(tmp_path, ui_backend="prompt_toolkit_fullscreen")
+    ui = PromptToolkitFullscreenUI(config)
+    frame = RenderFrame(transcript_entries=[{"kind": "assistant", "text": "hello"}])
+
+    ui.mount(frame)
+
+    assert "对话记录" in ui._transcript_control.text
+
+
+def test_prompt_toolkit_fullscreen_tasks_control_adds_region_heading(tmp_path):
+    config = _make_config(tmp_path, ui_backend="prompt_toolkit_fullscreen")
+    ui = PromptToolkitFullscreenUI(config)
+    frame = RenderFrame(
+        tasks={
+            "task-1": {
+                "task_id": "task-1",
+                "worker_label": "worker-1",
+                "status": "running",
+                "input_tokens": 3,
+                "output_tokens": 2,
+                "tool_use_count": 1,
+                "duration_ms": 120,
+            }
+        }
+    )
+
+    ui.mount(frame)
+
+    assert "任务概览" in ui._tasks_control.text
+
+
+def test_prompt_toolkit_fullscreen_clear_modal_restores_non_modal_focus(tmp_path):
+    config = _make_config(tmp_path, ui_backend="prompt_toolkit_fullscreen")
+    ui = PromptToolkitFullscreenUI(config)
+
+    ui.show_modal(
+        {
+            "kind": "tool_permission",
+            "tool_name": "write_file",
+            "target_summary": str(tmp_path / "demo.txt"),
+            "backend_risk_level": "high",
+            "display_risk_level": "high",
+            "summary_lines": ["demo"],
+            "action_labels": ["允许一次", "本会话总是允许", "拒绝"],
+        }
+    )
+
+    ui.clear_modal()
+    assert ui._focused_pane in ("input", "transcript")
+
+
+def test_prompt_toolkit_fullscreen_search_matches_transcript_lines(tmp_path):
+    config = _make_config(tmp_path, ui_backend="prompt_toolkit_fullscreen")
+    ui = PromptToolkitFullscreenUI(config)
+    ui._transcript_text_cache = "alpha\nbeta match\ngamma match\ndelta"
+
+    ui._set_transcript_search_query("match")
+
+    assert ui._transcript_search_query == "match"
+    assert ui._transcript_search_matches == [1, 2]
+    assert ui._transcript_search_index == 0
+
+
+def test_prompt_toolkit_fullscreen_search_navigation_wraps(tmp_path):
+    config = _make_config(tmp_path, ui_backend="prompt_toolkit_fullscreen")
+    ui = PromptToolkitFullscreenUI(config)
+    ui._transcript_text_cache = "alpha\nbeta match\ngamma match\ndelta"
+    ui._set_transcript_search_query("match")
+
+    ui._step_transcript_search(1)
+    assert ui._transcript_search_index == 1
+
+    ui._step_transcript_search(1)
+    assert ui._transcript_search_index == 0
+
+    ui._step_transcript_search(-1)
+    assert ui._transcript_search_index == 1
+
+
+def test_prompt_toolkit_fullscreen_search_navigation_scrolls_transcript_viewport(tmp_path):
+    config = _make_config(tmp_path, ui_backend="prompt_toolkit_fullscreen")
+    ui = PromptToolkitFullscreenUI(config)
+    ui._transcript_text_cache = "\n".join(f"line {i}" for i in range(1, 41))
+    ui._set_transcript_search_query("line 30")
+
+    ui._step_transcript_search(1)
+
+    assert ui._transcript_search_index == 0
+    assert ui._pane_scroll_offsets["transcript"] > 0
+
+
+def test_prompt_toolkit_fullscreen_search_clears_when_query_empty(tmp_path):
+    config = _make_config(tmp_path, ui_backend="prompt_toolkit_fullscreen")
+    ui = PromptToolkitFullscreenUI(config)
+    ui._transcript_text_cache = "alpha\nbeta match\ngamma match\ndelta"
+    ui._set_transcript_search_query("match")
+
+    ui._set_transcript_search_query("")
+
+    assert ui._transcript_search_query == ""
+    assert ui._transcript_search_matches == []
+    assert ui._transcript_search_index == -1
+
+
+def test_prompt_toolkit_fullscreen_escape_cancels_search_mode(tmp_path):
+    config = _make_config(tmp_path, ui_backend="prompt_toolkit_fullscreen")
+    ui = PromptToolkitFullscreenUI(config)
+    ui._input_mode = "search_query"
+    ui._input_enabled = True
+
+    ui._cancel_search_mode()
+
+    assert ui._input_mode == "normal"
+    assert ui._input_placeholder == "请输入消息并回车。"
+
+
+def test_prompt_toolkit_fullscreen_enter_search_mode_is_ignored_during_permission_flow(tmp_path):
+    config = _make_config(tmp_path, ui_backend="prompt_toolkit_fullscreen")
+    ui = PromptToolkitFullscreenUI(config)
+    import asyncio
+
+    loop = asyncio.new_event_loop()
+    try:
+        ui._pending_permission_future = loop.create_future()
+        ui._enter_search_mode()
+        assert ui._input_mode != "search_query"
+    finally:
+        loop.close()
+
+
+def test_prompt_toolkit_fullscreen_thinking_blocks_render_collapsed_by_default(tmp_path):
+    config = _make_config(tmp_path, ui_backend="prompt_toolkit_fullscreen")
+    ui = PromptToolkitFullscreenUI(config)
+    frame = RenderFrame(
+        transcript_entries=[
+            {"kind": "assistant", "text": "hello"},
+            {"kind": "thinking", "text": "plan one"},
+            {"kind": "thinking", "text": " plan two"},
+        ]
+    )
+
+    ui.mount(frame)
+
+    assert "[thinking collapsed]" in ui._transcript_control.text
+    assert "plan one" not in ui._transcript_control.text
+
+
+def test_prompt_toolkit_fullscreen_toggle_thinking_expands_transcript_block(tmp_path):
+    config = _make_config(tmp_path, ui_backend="prompt_toolkit_fullscreen")
+    ui = PromptToolkitFullscreenUI(config)
+    frame = RenderFrame(
+        transcript_entries=[
+            {"kind": "assistant", "text": "hello"},
+            {"kind": "thinking", "text": "plan one"},
+            {"kind": "thinking", "text": " plan two"},
+        ]
+    )
+
+    ui.mount(frame)
+    ui._toggle_thinking_visibility()
+
+    assert ui._thinking_expanded is True
+    assert "plan one" in ui._transcript_control.text
+    assert "plan two" in ui._transcript_control.text
+
+
+def test_prompt_toolkit_fullscreen_task_activity_can_toggle_detail_mode(tmp_path):
+    config = _make_config(tmp_path, ui_backend="prompt_toolkit_fullscreen")
+    ui = PromptToolkitFullscreenUI(config)
+    frame = RenderFrame(
+        task_activity_entries=[
+            {
+                "task_id": "task-1",
+                "worker_label": "worker-1",
+                "status": "completed",
+                "summary": "Worker completed request.",
+                "result_text": "full result text",
+                "input_tokens": 3,
+                "output_tokens": 2,
+                "tool_use_count": 1,
+                "duration_ms": 120,
+            }
+        ]
+    )
+
+    ui.mount(frame)
+    assert "full result text" not in ui._tasks_control.text
+
+    ui._toggle_task_activity_detail()
+
+    assert ui._task_activity_expanded is True
+    assert "full result text" in ui._tasks_control.text
+
+
+def test_prompt_toolkit_fullscreen_tool_result_blocks_show_more_readable_prefix(tmp_path):
+    config = _make_config(tmp_path, ui_backend="prompt_toolkit_fullscreen")
+    ui = PromptToolkitFullscreenUI(config)
+    frame = RenderFrame(
+        transcript_entries=[
+            {"kind": "tool_result", "text": "[tool result] line one\nline two"},
+        ]
+    )
+
+    ui.mount(frame)
+
+    assert "[tool result]" not in ui._transcript_control.text
+    assert "工具结果:" in ui._transcript_control.text
+    assert "line one" in ui._transcript_control.text
+
+
+def test_ui_runtime_builds_phase1_permission_modal_schema(tmp_path):
+    config = _make_config(tmp_path)
+    from xxcode.agent.query_engine import QueryEngine
+    from xxcode.tools import ToolCall
+    from xxcode.ui.runtime import UiEvent, UiRuntime
+
+    engine = QueryEngine(config)
+
+    class _NoopUi:
+        async def ask_permission(self, tc, dangerous=False):
+            return "deny"
+
+        def show_modal(self, modal_state):
+            self.modal_state = modal_state
+
+        def clear_modal(self):
+            pass
+
+        def mount(self, initial_frame):
+            pass
+
+        def update(self, frame):
+            self.frame = frame
+
+        def shutdown(self, final_snapshot):
+            pass
+
+    ui = _NoopUi()
+    runtime = UiRuntime(engine=engine, ui=ui)
+    event = UiEvent(
+        type="permission_requested",
+        content="write_file",
+        metadata={
+            "tool_call": ToolCall(
+                id="tool-1",
+                name="write_file",
+                input={"file_path": str(tmp_path / "demo.txt"), "content": "hello"},
+            ),
+            "risk": "normal",
+            "dangerous": False,
+        },
+    )
+
+    modal_state = runtime._build_permission_modal_state(event)
+
+    assert modal_state["kind"] == "tool_permission"
+    assert modal_state["tool_name"] == "write_file"
+    assert modal_state["backend_risk_level"] == "normal"
+    assert modal_state["display_risk_level"] == "medium"
+    assert modal_state["target_summary"].endswith("demo.txt")
+    assert modal_state["action_labels"] == ["允许一次", "本会话总是允许", "拒绝"]
+    assert "hello" in "\n".join(modal_state["summary_lines"])
+
+
+def test_ui_runtime_distinguishes_skill_shell_and_mcp_modal_kinds(tmp_path):
+    config = _make_config(tmp_path)
+    from types import SimpleNamespace
+    from xxcode.agent.query_engine import QueryEngine
+    from xxcode.ui.runtime import UiEvent, UiRuntime
+
+    engine = QueryEngine(config)
+    ui = SimpleNamespace()
+    runtime = UiRuntime(engine=engine, ui=ui)
+
+    skill_event = UiEvent(
+        type="permission_requested",
+        metadata={
+            "skill_shell_request": SimpleNamespace(skill_name="demo-skill", command="npm test"),
+            "risk": "high",
+            "dangerous": True,
+        },
+    )
+    trust_event = UiEvent(
+        type="permission_requested",
+        metadata={
+            "mcp_trust_request": [{"name": "docs", "command": "node", "args": ["server.js"]}],
+            "risk": "high",
+            "dangerous": True,
+        },
+    )
+
+    skill_modal = runtime._build_permission_modal_state(skill_event)
+    trust_modal = runtime._build_permission_modal_state(trust_event)
+
+    assert skill_modal["kind"] == "skill_shell_permission"
+    assert trust_modal["kind"] == "mcp_trust_permission"
+    assert skill_modal["display_risk_level"] == "high"
+    assert trust_modal["display_risk_level"] == "high"
+
+
 def test_ui_runtime_records_recent_task_activity_entries(tmp_path):
     config = _make_config(tmp_path)
     from xxcode.agent.query_engine import QueryEngine
@@ -444,7 +895,7 @@ def test_prompt_toolkit_fullscreen_ui_respects_frame_input_state(tmp_path):
     ui.mount(frame)
 
     assert ui._input_field.buffer.read_only is True
-    assert "Input Disabled:" in ui._input_meta_control.text
+    assert "输入已锁定：" in ui._input_meta_control.text
     assert "Native terminal tool owns stdin." in ui._input_meta_control.text
 
     frame.input_enabled = True
@@ -453,8 +904,31 @@ def test_prompt_toolkit_fullscreen_ui_respects_frame_input_state(tmp_path):
     ui.update(frame)
 
     assert ui._input_field.buffer.read_only is False
-    assert "Input Ready:" in ui._input_meta_control.text
+    assert "输入就绪：" in ui._input_meta_control.text
     assert "Type a message." in ui._input_meta_control.text
+
+
+def test_prompt_toolkit_fullscreen_modal_formats_phase1_schema(tmp_path):
+    config = _make_config(tmp_path, ui_backend="prompt_toolkit_fullscreen")
+    ui = PromptToolkitFullscreenUI(config)
+
+    text = ui._format_modal(
+        {
+            "kind": "tool_permission",
+            "tool_name": "write_file",
+            "target_summary": str(tmp_path / "demo.txt"),
+            "backend_risk_level": "normal",
+            "display_risk_level": "medium",
+            "summary_lines": ["hello world"],
+            "action_labels": ["允许一次", "本会话总是允许", "拒绝"],
+        }
+    )
+
+    assert "权限请求" in text
+    assert "write_file" in text
+    assert "需确认" in text
+    assert "hello world" in text
+    assert "允许一次" in text
 
 
 def test_run_single_shot_uses_ui_runtime_backend_contract(tmp_path):

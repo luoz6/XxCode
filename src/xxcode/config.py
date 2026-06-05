@@ -10,6 +10,7 @@ class Config:
     """Agent configuration loaded from environment variables and defaults."""
 
     # API settings: env-first, override via CLI flags (--api-key, --base-url, --model)
+    # Supported models: Claude (claude-*), DeepSeek (deepseek-*), OpenAI (gpt-*, o1, o3, o4)
     api_key: str = field(
         default_factory=lambda: (
             os.environ.get("XXCODE_API_KEY")

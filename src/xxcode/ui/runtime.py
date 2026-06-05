@@ -197,14 +197,14 @@ class UiRuntime:
         tc = event.metadata.get("tool_call")
         skill_shell_request = event.metadata.get("skill_shell_request")
         mcp_trust_request = event.metadata.get("mcp_trust_request")
-        answer = "no"
+        answer = "deny"
         if skill_shell_request is not None:
             class _SkillShellPrompt:
                 name = f"skill-shell:{skill_shell_request.skill_name}"
                 input = {"command": skill_shell_request.command, "file_path": ""}
 
             answer = await self.ui.ask_permission(_SkillShellPrompt(), dangerous=True)
-            self.engine.resolve_skill_permission(answer in ("yes", "always"))
+            self.engine.resolve_skill_permission(answer in ("once", "always"))
         elif mcp_trust_request is not None:
             class _McpTrustPrompt:
                 name = "mcp-project-trust"
@@ -214,7 +214,7 @@ class UiRuntime:
                 }
 
             answer = await self.ui.ask_permission(_McpTrustPrompt(), dangerous=True)
-            self.engine.resolve_mcp_trust(answer in ("yes", "always"))
+            self.engine.resolve_mcp_trust(answer in ("once", "always"))
         elif tc is not None:
             answer = await self.ui.ask_permission(
                 tc,
@@ -223,7 +223,7 @@ class UiRuntime:
                     event.metadata.get("risk") == "high",
                 ),
             )
-            if answer in ("yes", "always"):
+            if answer in ("once", "always"):
                 decision = "always" if answer == "always" else "once"
                 self.engine.resolve_permission(decision, tc.name)
             else:
@@ -239,10 +239,19 @@ class UiRuntime:
         await self._flush(force=True)
 
     def _build_permission_modal_state(self, event: UiEvent) -> Dict[str, Any]:
+        from ..cli.ui_shared import (
+            PHASE1_PERMISSION_ACTION_LABELS,
+            translate_backend_risk_level,
+        )
+
         tc = event.metadata.get("tool_call")
         skill_shell_request = event.metadata.get("skill_shell_request")
-        tool_name = ""
-        target_summary = ""
+        mcp_trust_request = event.metadata.get("mcp_trust_request")
+        backend_risk_level = event.metadata.get("risk") or (
+            "high" if event.metadata.get("dangerous", False) else "normal"
+        )
+        display_risk_level = translate_backend_risk_level(backend_risk_level)
+
         if tc is not None:
             tool_name = getattr(tc, "name", "")
             tool_input = getattr(tc, "input", {}) or {}
@@ -252,23 +261,38 @@ class UiRuntime:
                 or tool_input.get("pattern")
                 or ""
             )
+            summary_lines = []
+            if tool_name == "run_shell":
+                command = str(tool_input.get("command", ""))
+                summary_lines = [command[:200]]
+            elif tool_name in ("write_file", "edit_file"):
+                summary_lines = [str(tool_input.get("content", ""))[:200]]
+            kind = "tool_permission"
         elif skill_shell_request is not None:
             tool_name = "skill-shell"
             target_summary = getattr(skill_shell_request, "command", "")
-        elif event.metadata.get("mcp_trust_request") is not None:
+            summary_lines = [target_summary[:200]]
+            kind = "skill_shell_permission"
+        elif mcp_trust_request is not None:
             tool_name = "mcp-project-trust"
-            target_summary = self._format_mcp_trust_target(
-                event.metadata.get("mcp_trust_request")
-            )
-        risk_level = event.metadata.get("risk")
-        if not risk_level:
-            risk_level = "high" if event.metadata.get("dangerous", False) else "low"
+            target_summary = self._format_mcp_trust_target(mcp_trust_request)
+            summary_lines = [target_summary[:200]]
+            kind = "mcp_trust_permission"
+        else:
+            tool_name = ""
+            target_summary = ""
+            summary_lines = []
+            kind = "permission_request"
+
         return {
-            "kind": "permission_request",
+            "kind": kind,
             "tool_name": tool_name,
-            "risk_level": risk_level,
-            "dangerous": bool(event.metadata.get("dangerous", False)),
             "target_summary": str(target_summary),
+            "backend_risk_level": backend_risk_level,
+            "display_risk_level": display_risk_level,
+            "dangerous": bool(event.metadata.get("dangerous", False)),
+            "summary_lines": [line for line in summary_lines if line],
+            "action_labels": list(PHASE1_PERMISSION_ACTION_LABELS),
         }
 
     @staticmethod
@@ -289,7 +313,7 @@ class UiRuntime:
     def _record_permission_audit(self, event: UiEvent, answer: str) -> None:
         audit_entry = {
             "tool_name": self.frame.modal_state.get("tool_name", ""),
-            "risk_level": self.frame.modal_state.get("risk_level", "low"),
+            "risk_level": self.frame.modal_state.get("backend_risk_level", "low"),
             "dangerous": self.frame.modal_state.get("dangerous", False),
             "target_summary": self.frame.modal_state.get("target_summary", ""),
             "decision": answer,

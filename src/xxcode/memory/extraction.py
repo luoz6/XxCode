@@ -255,8 +255,16 @@ class ExtractionController:
         last_user_turn = getattr(state, "last_extraction_user_turn", 0)
         turns_since = current_user_turn - last_user_turn
         if turns_since < cfg.turns_between_extractions:
+            logger.debug(
+                "Skipping memory extraction: turns since last extraction (%d) is below the threshold (%d).",
+                turns_since,
+                cfg.turns_between_extractions,
+            )
             return False
         if state.memory_writes_since_extraction:
+            logger.debug(
+                "Skipping memory extraction: the main agent wrote memory during this turn.",
+            )
             return False
         return True
 

@@ -35,7 +35,8 @@ BUILTIN_COMMAND_SPECS: tuple[SlashCommandSpec, ...] = (
         aliases=("/compress",),
     ),
     SlashCommandSpec("/yolo", "Toggle YOLO mode (skip all permission prompts)"),
-    SlashCommandSpec("/sessions", "List saved sessions"),
+    SlashCommandSpec("/skill", "Show visible skills for current directory"),
+    SlashCommandSpec("/mcp", "Show registered MCP tools for current session"),
     SlashCommandSpec("/resume", "Resume a previous session by ID"),
     SlashCommandSpec("/quit", "Exit XxCode", aliases=("/q", "/exit")),
 )

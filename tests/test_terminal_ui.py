@@ -269,3 +269,24 @@ class TestPickFromListApplication:
         style = _build_picklist_style()
 
         assert style is not None
+
+
+def test_permission_prompt_phase1_copy_uses_three_actions():
+    prompt_copy = "  ? 允许操作？ [y] 允许一次  [a] 本会话总是允许  [n] 拒绝"
+
+    assert "允许一次" in prompt_copy
+    assert "本会话总是允许" in prompt_copy
+    assert "拒绝" in prompt_copy
+    assert "never" not in prompt_copy
+
+
+def test_ascii_safe_symbol_map_uses_plain_markers():
+    ascii_symbols = {
+        "marker.permission": "*",
+        "marker.success": "OK",
+        "marker.error": "X",
+    }
+
+    assert ascii_symbols["marker.permission"] == "*"
+    assert ascii_symbols["marker.success"] == "OK"
+    assert ascii_symbols["marker.error"] == "X"

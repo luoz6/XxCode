@@ -1713,6 +1713,12 @@ class TestCompleter:
             "/cost, /tokens",
             "Show token usage and API cost breakdown",
         ) in rows
-        assert ("/compact, /compress", "Manually compress conversation context") in rows
+        assert (
+            "/compact, /compress",
+            "Manually compress conversation context",
+        ) in rows
+        assert ("/skill", "Show visible skills for current directory") in rows
+        assert ("/mcp", "Show registered MCP tools for current session") in rows
+        assert all(command != "/sessions" for command, _ in rows)
         assert ("/quit, /q, /exit", "Exit XxCode") in rows
         assert ("/review", "review description") in rows

@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 SKILL_INLINE_SOURCE = "skill_inline"
 SKILL_INLINE_META_KEY = "xxcode_skill_context"
 SKILL_INLINE_ALLOWED_TOOLS_KEY = "xxcode_skill_allowed_tools"
+SKILL_INLINE_DISABLE_SKILL_TOOL_KEY = "xxcode_skill_disable_skill_tool"
 
 EFFORT_THINKING_BUDGETS: dict[str, int] = {
     "quick": 1024,
@@ -161,7 +162,12 @@ class SkillExecutor:
         )
 
     @staticmethod
-    def build_inline_skill_message(skill: SkillSpec, prompt: str) -> dict:
+    def build_inline_skill_message(
+        skill: SkillSpec,
+        prompt: str,
+        *,
+        disable_skill_tool: bool = False,
+    ) -> dict:
         source_label = {
             SkillSource.USER: "user skill",
             SkillSource.PROJECT: "project skill",
@@ -196,6 +202,7 @@ class SkillExecutor:
                 ),
                 "xxcode_skill_model": skill.frontmatter.model or None,
                 "xxcode_skill_effort": skill.frontmatter.effort,
+                SKILL_INLINE_DISABLE_SKILL_TOOL_KEY: disable_skill_tool,
             },
         }
 

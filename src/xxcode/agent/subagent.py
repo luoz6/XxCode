@@ -25,6 +25,12 @@ from ..skills.runtime import collect_inline_skill_runtime
 from ..tools import ToolCall
 from ..tools.registry import ToolRegistry
 from .state import AgentState
+from .recall_utils import (
+    clip_recall_text,
+    format_tool_input_for_recall,
+    get_recent_tool_names,
+    is_read_like_tool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +45,6 @@ _READ_LIKE_TOOL_NAMES = frozenset({
     "search",
     "tool_search",
 })
-
-
 @dataclass
 class SubAgentSessionState:
     """Request-scoped execution state for one sub-agent request."""
@@ -515,27 +519,12 @@ class SubAgent:
         tool: Any,
         raw_input: dict[str, Any] | None = None,
     ) -> bool:
-        raw_input = raw_input or {}
-        has_location_hint = any(
-            isinstance(raw_input.get(key), str) and raw_input.get(key, "").strip()
-            for key in ("file_path", "path", "pattern", "query")
+        return is_read_like_tool(
+            name,
+            tool,
+            raw_input,
+            read_like_names=_READ_LIKE_TOOL_NAMES,
         )
-        if not has_location_hint:
-            return False
-        if name in _READ_LIKE_TOOL_NAMES:
-            return True
-        if tool is None:
-            return False
-        try:
-            validated_input = tool.input_schema.model_validate(raw_input)
-        except Exception:
-            validated_input = None
-        try:
-            return bool(tool.is_read_only(validated_input))
-        except TypeError:
-            return bool(tool.is_read_only())
-        except Exception:
-            return False
 
     def _build_agent_memory_recall_query(
         self,
@@ -549,13 +538,13 @@ class SubAgent:
         for observation in tool_observations:
             call = observation["call"]
             result = observation["result"]
-            content = self._clip_recall_text(observation["content"])
-            details = self._format_tool_input_for_recall(call.input)
+            content = clip_recall_text(observation["content"])
+            details = format_tool_input_for_recall(call.input)
             label = call.name if not details else f"{call.name} ({details})"
             line = f"- {label}: {content}"
             if getattr(result, "is_error", False):
                 errors.append(line)
-            elif self._is_read_like_tool(call.name, observation.get("tool"), call.input):
+            elif is_read_like_tool(call.name, observation.get("tool"), call.input):
                 observations.append(line)
 
         parts = [f"Task: {task_prompt}"]
@@ -568,41 +557,16 @@ class SubAgent:
     @staticmethod
     def _format_tool_input_for_recall(raw_input: dict[str, Any]) -> str:
         """Extract the most useful location hints from a tool call input."""
-        if not isinstance(raw_input, dict):
-            return ""
-        hints: list[str] = []
-        for key in ("file_path", "path", "pattern", "query", "command"):
-            value = raw_input.get(key)
-            if isinstance(value, str) and value.strip():
-                hints.append(f"{key}={value.strip()}")
-            if len(hints) == 2:
-                break
-        return ", ".join(hints)
+        return format_tool_input_for_recall(raw_input)
 
     @staticmethod
     def _clip_recall_text(text: str, *, limit: int = 400) -> str:
-        cleaned = " ".join(text.split())
-        if len(cleaned) <= limit:
-            return cleaned
-        return cleaned[: max(limit - 3, 1)] + "..."
+        return clip_recall_text(text, limit=limit)
 
     @staticmethod
     def _get_recent_tool_names(messages: list[dict[str, Any]]) -> list[str]:
         """Extract recently used tool names from recent assistant turns."""
-        names: list[str] = []
-        for msg in reversed(messages[-10:]):
-            if msg.get("role") != "assistant":
-                continue
-            content = msg.get("content", [])
-            if not isinstance(content, list):
-                continue
-            for block in content:
-                if block.get("type") != "tool_use":
-                    continue
-                name = block.get("name", "")
-                if name and name not in names:
-                    names.append(name)
-        return names
+        return get_recent_tool_names(messages)
 
     @staticmethod
     def _get_surfaced_agent_memory_ids(messages: list[dict[str, Any]]) -> set[str]:

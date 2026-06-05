@@ -1,5 +1,6 @@
 """Tests for MEMORY.md index generation and loading."""
 
+import logging
 import tempfile
 from pathlib import Path
 
@@ -124,6 +125,15 @@ class TestTruncateEntrypointContent:
         result = truncate_entrypoint_content("\n".join([long_line] * 3) + "\n")
         assert result.was_byte_truncated
         assert "WARNING: MEMORY.md is too large" in result.content
+
+    def test_logs_warning_when_truncated(self, caplog):
+        long_line = "- [X](x.md) - " + "A" * (MAX_ENTRYPOINT_BYTES // 2)
+
+        with caplog.at_level(logging.WARNING):
+            result = truncate_entrypoint_content("\n".join([long_line] * 3) + "\n")
+
+        assert result.was_byte_truncated
+        assert "MEMORY.md truncated" in caplog.text
 
     def test_combined_truncation(self):
         long_line = "- [X](x.md) - " + "B" * 500

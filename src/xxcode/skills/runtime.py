@@ -8,7 +8,11 @@ from pathlib import Path
 from typing import Any
 
 from .discovery import SKILL_LISTING_SOURCE
-from .executor import SKILL_INLINE_ALLOWED_TOOLS_KEY, SKILL_INLINE_SOURCE
+from .executor import (
+    SKILL_INLINE_ALLOWED_TOOLS_KEY,
+    SKILL_INLINE_DISABLE_SKILL_TOOL_KEY,
+    SKILL_INLINE_SOURCE,
+)
 from .persistence import SKILL_RECOVERY_SOURCE
 
 SKILL_TRANSIENT_SOURCES = frozenset({
@@ -25,6 +29,7 @@ class InlineSkillRuntime:
     allowed_tool_names: frozenset[str] | None = None
     model_override: str | None = None
     effort: str | int | None = None
+    disable_skill_tool: bool = False
 
 
 def strip_skill_context_messages(
@@ -64,6 +69,7 @@ def collect_inline_skill_runtime(messages: list[dict[str, Any]]) -> InlineSkillR
     effective_allowlist: set[str] | None = None
     effective_model: str | None = None
     effective_effort: str | int | None = None
+    effective_disable_skill_tool = False
 
     for message in messages:
         metadata = message.get("metadata", {})
@@ -90,6 +96,9 @@ def collect_inline_skill_runtime(messages: list[dict[str, Any]]) -> InlineSkillR
         if raw_effort is not None:
             effective_effort = raw_effort
 
+        if metadata.get(SKILL_INLINE_DISABLE_SKILL_TOOL_KEY):
+            effective_disable_skill_tool = True
+
     return InlineSkillRuntime(
         allowed_tool_names=(
             frozenset(effective_allowlist)
@@ -98,6 +107,7 @@ def collect_inline_skill_runtime(messages: list[dict[str, Any]]) -> InlineSkillR
         ),
         model_override=effective_model,
         effort=effective_effort,
+        disable_skill_tool=effective_disable_skill_tool,
     )
 
 

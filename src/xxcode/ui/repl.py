@@ -24,6 +24,12 @@ def _report_persistence_error(console, action: str, exc: Exception) -> None:
     )
 
 
+def _get_tool_registry(engine):
+    """Return the current tool registry or None if the engine is missing it."""
+    core_engine = getattr(engine, "core_engine", None)
+    return getattr(core_engine, "_registry", None)
+
+
 def _cmd_help(console, *, skill_registry=None, cwd=None) -> None:
     """Show help with a Rich table."""
     from rich.table import Table
@@ -85,38 +91,82 @@ def _cmd_tokens(console, agent_state) -> None:
     _cmd_cost(console, agent_state)
 
 
-def _cmd_sessions(console, config) -> None:
-    """List saved sessions."""
-    from datetime import datetime
+def _cmd_skill(console, *, skill_registry=None, cwd=None) -> None:
+    """List visible manually invocable skills for the current runtime cwd."""
     from rich.table import Table
 
-    from .session import SessionStore
-
-    store = SessionStore(config.session_dir)
-    sessions = store.list_sessions()
-
-    if not sessions:
-        console.print("  [dim]No saved sessions.[/dim]")
+    if skill_registry is None:
+        console.print("  [dim]Skills are disabled.[/dim]")
         return
 
-    table = Table(title="Saved Sessions", box=None, title_style="bold cyan", padding=(0, 2))
-    table.add_column("ID", style="cyan", width=14)
-    table.add_column("Messages", justify="right")
-    table.add_column("Turns", justify="right")
-    table.add_column("Last Updated", style="dim")
+    skills = skill_registry.list_user_invocable(cwd) if cwd is not None else []
+    if not skills:
+        console.print("  [dim]No visible skills for current directory.[/dim]")
+        return
 
-    for session in sessions[:20]:
-        dt = datetime.fromtimestamp(session.last_updated).strftime("%m-%d %H:%M")
+    table = Table(title="Visible Skills", box=None, title_style="bold cyan", padding=(0, 2))
+    table.add_column("Command", style="bold cyan", no_wrap=True)
+    table.add_column("Description", style="dim")
+    table.add_column("Source", style="dim", no_wrap=True)
+
+    for skill in skills:
         table.add_row(
-            session.session_id,
-            str(session.message_count),
-            str(session.turn_count),
-            dt,
+            f"/{skill.canonical_name}",
+            skill.frontmatter.argument_hint or skill.frontmatter.description,
+            skill.source.value,
         )
 
     console.print()
     console.print(table)
-    console.print("  [dim]恢复: /resume <session-id>  或  xxcode --resume <session-id>[/dim]")
+    console.print()
+
+
+def _mcp_rows_from_registry(registry) -> list[tuple[str, str, str]]:
+    """Return sorted (tool_name, kind, status) rows for current MCP tools."""
+    if registry is None:
+        return []
+
+    resource_names = {"mcp_list_resources", "mcp_read_resource"}
+    rows_by_name: dict[str, tuple[str, str, str]] = {}
+
+    for tool in registry.list_tools():
+        name = getattr(tool, "name", "")
+        if not (name.startswith("mcp__") or name in resource_names):
+            continue
+        kind = "dynamic" if name.startswith("mcp__") else "resource"
+        rows_by_name[name] = (name, kind, "registered")
+
+    for tool in registry.get_deferred_tools().values():
+        name = getattr(tool, "name", "")
+        if name in rows_by_name:
+            continue
+        if not (name.startswith("mcp__") or name in resource_names):
+            continue
+        kind = "dynamic" if name.startswith("mcp__") else "resource"
+        rows_by_name[name] = (name, kind, "deferred")
+
+    return [rows_by_name[name] for name in sorted(rows_by_name)]
+
+
+def _cmd_mcp(console, *, registry=None) -> None:
+    """List the current registered MCP tool snapshot without side effects."""
+    from rich.table import Table
+
+    rows = _mcp_rows_from_registry(registry)
+    if not rows:
+        console.print("  [dim]No registered MCP tools in current session.[/dim]")
+        return
+
+    table = Table(title="Registered MCP Tools", box=None, title_style="bold cyan", padding=(0, 2))
+    table.add_column("Tool", style="bold cyan", no_wrap=True)
+    table.add_column("Kind", style="dim", no_wrap=True)
+    table.add_column("Status", style="dim", no_wrap=True)
+
+    for tool_name, kind, status in rows:
+        table.add_row(tool_name, kind, status)
+
+    console.print()
+    console.print(table)
     console.print()
 
 
@@ -139,8 +189,9 @@ async def run_repl(
     if session_id is None:
         session_id = uuid.uuid4().hex[:12]
 
-    if hasattr(engine, "core_engine") and hasattr(engine.core_engine, "_registry"):
-        ui.set_registry(engine.core_engine._registry)
+    registry = _get_tool_registry(engine)
+    if registry is not None:
+        ui.set_registry(registry)
 
     def _refresh_exec_context():
         current_cwd = resolve_skill_context_cwd(
@@ -245,10 +296,6 @@ async def run_repl(
                     _cmd_tokens(console, agent_state)
                     continue
 
-                if cmd == "sessions":
-                    _cmd_sessions(console, config)
-                    continue
-
                 if cmd_name == "resume":
                     target_id = cmd.split()[1] if len(cmd.split()) > 1 else ""
                     if not target_id:
@@ -320,6 +367,14 @@ async def run_repl(
 
                 if cmd == "help":
                     _cmd_help(console, skill_registry=skill_registry, cwd=current_cwd)
+                    continue
+
+                if cmd == "skill":
+                    _cmd_skill(console, skill_registry=skill_registry, cwd=current_cwd)
+                    continue
+
+                if cmd == "mcp":
+                    _cmd_mcp(console, registry=registry)
                     continue
 
                 skill = (

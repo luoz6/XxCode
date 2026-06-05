@@ -1,16 +1,18 @@
 """Tests for helper boundaries used by the core agent loop."""
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
-from xxcode.agent.loop import CoreExecutionEngine
 from xxcode.agent.continue_reasons import ContinueReason
 from xxcode.agent.messages import (
     add_usage,
     commit_assistant_turn,
     commit_tool_results_turn,
 )
+from xxcode.agent.loop import CoreExecutionEngine
+from xxcode.agent.memory_recall import run_memory_recall_with_query
 from xxcode.agent.output_recovery import (
     ESCALATED_MAX_TOKENS,
     OutputRecoveryState,
@@ -18,6 +20,7 @@ from xxcode.agent.output_recovery import (
 )
 from xxcode.agent.permission_resolver import denied_tool_result_content
 from xxcode.agent.state import AgentState
+from xxcode.agent.message_injection import _insert_before_current_user_message
 from xxcode.tools import ToolCall
 from xxcode.tools.registry import ToolRegistry
 
@@ -60,6 +63,17 @@ class _PendingExecutor:
 
     def get_slot(self, _tid):
         return None
+
+
+class _AwaitableValue:
+    def __init__(self, value):
+        self._value = value
+
+    def __await__(self):
+        async def _resolve():
+            return self._value
+
+        return _resolve().__await__()
 
 
 def test_commit_assistant_turn_records_usage_and_tool_use():
@@ -174,6 +188,119 @@ def test_commit_tool_results_turn_dedupes_results_and_adds_failure_hint():
     assert len(content) == 2
     assert content[0]["content"] == "missing"
     assert "failed 3 times" in content[1]["text"]
+
+
+def test_insert_before_current_user_message_preserves_normal_query_order():
+    state = AgentState(
+        messages=[
+            {"role": "assistant", "content": [{"type": "text", "text": "older"}]},
+            {"role": "user", "content": [{"type": "text", "text": "current query"}]},
+        ]
+    )
+    injected = {
+        "role": "user",
+        "content": [{"type": "text", "text": "hidden context"}],
+    }
+
+    _insert_before_current_user_message(state, injected)
+
+    assert state.messages == [
+        {"role": "assistant", "content": [{"type": "text", "text": "older"}]},
+        injected,
+        {"role": "user", "content": [{"type": "text", "text": "current query"}]},
+    ]
+
+
+def test_insert_before_current_user_message_skips_trailing_tool_result_carrier():
+    state = AgentState(
+        messages=[
+            {"role": "user", "content": [{"type": "text", "text": "original task"}]},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "t1", "name": "read_file", "input": {}}
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": "ok"},
+                    {
+                        "type": "text",
+                        "text": "<system_hint>\nOne or more tool executions failed.\n</system_hint>",
+                    },
+                ],
+            },
+        ]
+    )
+    injected = {
+        "role": "user",
+        "content": [{"type": "text", "text": "hidden context"}],
+    }
+
+    _insert_before_current_user_message(state, injected)
+
+    assert state.messages == [
+        injected,
+        {"role": "user", "content": [{"type": "text", "text": "original task"}]},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "t1", "name": "read_file", "input": {}}
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "ok"},
+                {
+                    "type": "text",
+                    "text": "<system_hint>\nOne or more tool executions failed.\n</system_hint>",
+                },
+            ],
+        },
+    ]
+
+
+def test_insert_before_current_user_message_appends_when_only_tool_result_user_exists():
+    state = AgentState(
+        messages=[
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "t1", "name": "read_file", "input": {}}
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}
+                ],
+            },
+        ]
+    )
+    injected = {
+        "role": "user",
+        "content": [{"type": "text", "text": "hidden context"}],
+    }
+
+    _insert_before_current_user_message(state, injected)
+
+    assert state.messages == [
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "t1", "name": "read_file", "input": {}}
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}
+            ],
+        },
+        injected,
+    ]
 
 
 def test_output_truncation_escalates_then_commits_continuation():
@@ -298,3 +425,125 @@ async def test_execute_and_commit_tools_waits_for_executor_activity_instead_of_s
         pass
 
     assert executor.wait_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_run_memory_recall_with_query_accepts_sync_build_client(tmp_path, monkeypatch):
+    memory_dir = tmp_path / "memory"
+    memory_dir.mkdir()
+    config = SimpleNamespace(auto_memory_directory=str(memory_dir), cwd=tmp_path)
+    state = AgentState()
+    sync_client = object()
+    seen: list[object] = []
+
+    async def _fake_recall_memories_for_query(**kwargs):
+        client = await kwargs["client_factory"]()
+        seen.append(client)
+        return ["main"]
+
+    async def _fake_recall_agent_memories_for_query(*args, **kwargs):
+        client = await kwargs["client_factory"]()
+        seen.append(client)
+        return ["agent"]
+
+    monkeypatch.setattr(
+        "xxcode.agent.memory_recall.recall_memories_for_query",
+        _fake_recall_memories_for_query,
+    )
+    monkeypatch.setattr(
+        "xxcode.agent.memory_recall.recall_agent_memories_for_query",
+        _fake_recall_agent_memories_for_query,
+    )
+
+    result = await run_memory_recall_with_query(
+        config=config,
+        state=state,
+        query="find relevant memory",
+        build_client=lambda: sync_client,
+    )
+
+    assert result == ["main", "agent"]
+    assert seen == [sync_client, sync_client]
+
+
+@pytest.mark.asyncio
+async def test_run_memory_recall_with_query_accepts_async_build_client(tmp_path, monkeypatch):
+    memory_dir = tmp_path / "memory"
+    memory_dir.mkdir()
+    config = SimpleNamespace(auto_memory_directory=str(memory_dir), cwd=tmp_path)
+    state = AgentState()
+    async_client = object()
+    seen: list[object] = []
+
+    async def _fake_recall_memories_for_query(**kwargs):
+        client = await kwargs["client_factory"]()
+        seen.append(client)
+        return ["main"]
+
+    async def _fake_recall_agent_memories_for_query(*args, **kwargs):
+        client = await kwargs["client_factory"]()
+        seen.append(client)
+        return ["agent"]
+
+    async def _build_client():
+        return async_client
+
+    monkeypatch.setattr(
+        "xxcode.agent.memory_recall.recall_memories_for_query",
+        _fake_recall_memories_for_query,
+    )
+    monkeypatch.setattr(
+        "xxcode.agent.memory_recall.recall_agent_memories_for_query",
+        _fake_recall_agent_memories_for_query,
+    )
+
+    result = await run_memory_recall_with_query(
+        config=config,
+        state=state,
+        query="find relevant memory",
+        build_client=_build_client,
+    )
+
+    assert result == ["main", "agent"]
+    assert seen == [async_client, async_client]
+
+
+@pytest.mark.asyncio
+async def test_run_memory_recall_with_query_accepts_general_awaitable_build_client(tmp_path, monkeypatch):
+    memory_dir = tmp_path / "memory"
+    memory_dir.mkdir()
+    config = SimpleNamespace(auto_memory_directory=str(memory_dir), cwd=tmp_path)
+    state = AgentState()
+    awaitable_client = object()
+    seen: list[object] = []
+
+    async def _fake_recall_memories_for_query(**kwargs):
+        client = await kwargs["client_factory"]()
+        seen.append(client)
+        assert client is awaitable_client
+        return ["main"]
+
+    async def _fake_recall_agent_memories_for_query(*args, **kwargs):
+        client = await kwargs["client_factory"]()
+        seen.append(client)
+        assert client is awaitable_client
+        return ["agent"]
+
+    monkeypatch.setattr(
+        "xxcode.agent.memory_recall.recall_memories_for_query",
+        _fake_recall_memories_for_query,
+    )
+    monkeypatch.setattr(
+        "xxcode.agent.memory_recall.recall_agent_memories_for_query",
+        _fake_recall_agent_memories_for_query,
+    )
+
+    result = await run_memory_recall_with_query(
+        config=config,
+        state=state,
+        query="find relevant memory",
+        build_client=lambda: _AwaitableValue(awaitable_client),
+    )
+
+    assert result == ["main", "agent"]
+    assert seen == [awaitable_client, awaitable_client]

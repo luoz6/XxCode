@@ -9,6 +9,7 @@ This module keeps the loop focused on orchestration:
 
 The heavy lifting lives in helper modules:
 - messages.py
+- message_injection.py
 - output_recovery.py
 - ptl_recovery.py
 - permission_resolver.py
@@ -28,13 +29,9 @@ from ..api.retry import RetryConfig
 from ..config import Config, get_config
 from ..memory.injection import (
     MEMORY_INDEX_SOURCE,
-    build_memory_index_message,
-    build_recalled_memories_message,
-    recalled_memory_ids,
     strip_memory_context_messages,
 )
-from ..memory.agent_memory import recall_agent_memories_for_query
-from ..memory.recall import MemoryRecall, recall_memories_for_query
+from ..memory.recall import MemoryRecall
 from ..skills import (
     EFFORT_THINKING_BUDGETS,
     SKILL_LISTING_SOURCE,
@@ -69,6 +66,26 @@ from .messages import (
     build_progress_event,
     commit_assistant_turn,
     commit_tool_results_turn,
+    _repair_orphan_tools,
+)
+from .message_injection import (
+    _inject_memory_index_context,
+    _inject_recalled_memories,
+    _insert_before_current_user_message,
+    _strip_message_metadata,
+)
+from .memory_recall import (
+    append_fresh_recalled_memories,
+    build_followup_recall_query,
+    collect_tool_observations,
+    run_memory_recall_with_query,
+)
+from .recall_utils import (
+    clip_recall_text,
+    format_tool_input_for_recall,
+    get_recent_tool_names,
+    is_read_like_tool,
+    should_trigger_followup_recall,
 )
 from .output_recovery import (
     OutputRecoveryState,
@@ -99,11 +116,6 @@ _FATAL_API_ERROR_KEYWORDS = (
 _STREAM_ACTION_CONTINUE = "continue"
 _STREAM_ACTION_BREAK = "break"
 _STREAM_ACTION_RETURN = "return"
-_READ_LIKE_TOOL_NAMES = frozenset({
-    "read_file",
-    "grep_search",
-    "glob_match",
-})
 
 
 def _is_fatal_api_error(msg: str) -> bool:
@@ -151,68 +163,6 @@ class StreamAction:
     action: str = _STREAM_ACTION_CONTINUE
     event: StreamEvent | None = None
     consecutive_api_errors: int = 0
-
-
-def _repair_orphan_tools(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Defensively pair unpaired tool_use / tool_result blocks."""
-    tool_use_ids: set[str] = set()
-    tool_result_ids: set[str] = set()
-
-    for msg in messages:
-        content = msg.get("content")
-        if not isinstance(content, list):
-            continue
-        for block in content:
-            if block.get("type") == "tool_use":
-                tid = block.get("id", "")
-                if tid:
-                    tool_use_ids.add(tid)
-            elif block.get("type") == "tool_result":
-                tid = block.get("tool_use_id", "")
-                if tid:
-                    tool_result_ids.add(tid)
-
-    orphan_uses = tool_use_ids - tool_result_ids
-    orphan_results = tool_result_ids - tool_use_ids
-    if not orphan_uses and not orphan_results:
-        return messages
-
-    repaired: list[dict[str, Any]] = []
-    for msg in messages:
-        content = msg.get("content")
-        if not isinstance(content, list):
-            repaired.append(msg)
-            continue
-
-        new_content: list[dict[str, Any]] = []
-        has_orphan_use = False
-        for block in content:
-            if block.get("type") == "tool_result":
-                if block.get("tool_use_id", "") in orphan_results:
-                    continue
-            elif block.get("type") == "tool_use":
-                if block.get("id", "") in orphan_uses:
-                    has_orphan_use = True
-            new_content.append(block)
-
-        if new_content:
-            repaired.append({**msg, "content": new_content})
-
-        if has_orphan_use:
-            synthetic_results: list[dict[str, Any]] = []
-            for block in content:
-                if block.get("type") == "tool_use" and block.get("id", "") in orphan_uses:
-                    synthetic_results.append(
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": block["id"],
-                            "content": "[System: tool execution interrupted - no result available]",
-                        }
-                    )
-            if synthetic_results:
-                repaired.append({"role": "user", "content": synthetic_results})
-
-    return repaired
 
 
 class CoreExecutionEngine:
@@ -617,6 +567,10 @@ class CoreExecutionEngine:
             if inline_runtime.allowed_tool_names is not None:
                 active_registry = self._registry.filtered_copy(
                     allow_list=set(inline_runtime.allowed_tool_names)
+                )
+            if inline_runtime.disable_skill_tool:
+                active_registry = active_registry.filtered_copy(
+                    deny_list={"Skill"}
                 )
             current_cwd = resolve_skill_context_cwd(self.config.cwd, self._context)
             extra_context = {
@@ -1294,7 +1248,12 @@ class CoreExecutionEngine:
         Returns up to 5 relevant MemoryRecall objects, or an empty list
         on any error (graceful degradation — memory is best-effort).
         """
-        return await self._run_memory_recall_with_query(state, query=state.last_query)
+        return await run_memory_recall_with_query(
+            config=self.config,
+            state=state,
+            query=state.last_query,
+            build_client=lambda: self._build_client(max_tokens=256),
+        )
 
     async def _run_memory_recall_with_query(
         self,
@@ -1305,58 +1264,19 @@ class CoreExecutionEngine:
         already_surfaced: set[str] | None = None,
     ) -> list[MemoryRecall]:
         """Run memory recall for a specific query within the current session."""
-        try:
-            from pathlib import Path
-
-            memory_dir = Path(self.config.auto_memory_directory)
-            if not memory_dir.exists() or not query:
-                return []
-
-            async def _client_factory():
-                return self._build_client(max_tokens=256)
-
-            if recent_tools is None:
-                recent_tools = self._get_recent_tool_names(state)
-            if already_surfaced is None:
-                already_surfaced = recalled_memory_ids(state.messages)
-
-            main_results, agent_results = await asyncio.gather(
-                recall_memories_for_query(
-                    query=query,
-                    memory_dir=memory_dir,
-                    client_factory=_client_factory,
-                    recent_tools=recent_tools,
-                    already_surfaced=already_surfaced,
-                ),
-                recall_agent_memories_for_query(
-                    agent_type="main",
-                    project_root=self.config.cwd,
-                    query=query,
-                    client_factory=_client_factory,
-                    recent_tools=recent_tools,
-                    already_surfaced=already_surfaced,
-                ),
-            )
-            return list(main_results) + list(agent_results)
-        except Exception:
-            logger.debug("Memory recall pipeline failed", exc_info=True)
-            return []
+        return await run_memory_recall_with_query(
+            config=self.config,
+            state=state,
+            query=query,
+            build_client=lambda: self._build_client(max_tokens=256),
+            recent_tools=recent_tools,
+            already_surfaced=already_surfaced,
+        )
 
     @staticmethod
     def _get_recent_tool_names(state: AgentState) -> list[str]:
         """Extract recently used tool names from the last few assistant turns."""
-        names: list[str] = []
-        for msg in reversed(state.messages[-10:]):
-            if msg.get("role") != "assistant":
-                continue
-            content = msg.get("content", [])
-            if isinstance(content, list):
-                for block in content:
-                    if block.get("type") == "tool_use":
-                        name = block.get("name", "")
-                        if name and name not in names:
-                            names.append(name)
-        return names
+        return get_recent_tool_names(state.messages)
 
     def _collect_tool_observations(
         self,
@@ -1364,25 +1284,7 @@ class CoreExecutionEngine:
         tool_results: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         """Capture the latest tool outcomes for same-turn follow-up recall."""
-        observations: list[dict[str, Any]] = []
-        for result in tool_results:
-            if result.get("type") != "tool_result":
-                continue
-            tid = result.get("tool_use_id", "")
-            if not tid:
-                continue
-            slot = executor.get_slot(tid)
-            if slot is None:
-                continue
-            observations.append(
-                {
-                    "call": slot.tc,
-                    "tool": executor._registry.get(slot.tc.name),
-                    "is_error": slot.is_error,
-                    "content": slot.truncated if slot.truncated else result.get("content", ""),
-                }
-            )
-        return observations
+        return collect_tool_observations(executor, tool_results)
 
     async def _append_fresh_recalled_memories(
         self,
@@ -1390,78 +1292,21 @@ class CoreExecutionEngine:
         tool_observations: list[dict[str, Any]],
     ) -> None:
         """Append newly recalled memories after tool results in the same user turn."""
-        if not self.config.auto_memory_enabled or not self.config.auto_memory_directory:
-            return
-        if not state.last_query:
-            return
-        if not self._should_trigger_followup_recall(tool_observations):
-            return
-
-        recall_query = self._build_followup_recall_query(
-            state.last_query,
-            tool_observations,
+        await append_fresh_recalled_memories(
+            config=self.config,
+            state=state,
+            tool_observations=tool_observations,
+            build_client=lambda: self._build_client(max_tokens=256),
         )
-        if not recall_query:
-            return
-
-        recalled = await self._run_memory_recall_with_query(
-            state,
-            query=recall_query,
-            recent_tools=self._get_recent_tool_names(state),
-            already_surfaced=recalled_memory_ids(state.messages),
-        )
-        if not recalled:
-            return
-
-        message = build_recalled_memories_message(recalled)
-        if message is not None:
-            state.messages.append(message)
 
     @staticmethod
     def _should_trigger_followup_recall(tool_observations: list[dict[str, Any]]) -> bool:
         """Trigger follow-up recall after read observations or tool failures."""
-        if not tool_observations:
-            return False
-
-        for observation in tool_observations:
-            if observation.get("is_error"):
-                return True
-
-        return any(
-            CoreExecutionEngine._is_read_like_tool(
-                observation["call"].name,
-                observation.get("tool"),
-                observation["call"].input,
-            )
-            for observation in tool_observations
-        )
+        return should_trigger_followup_recall(tool_observations)
 
     @staticmethod
     def _is_read_like_tool(name: str, tool: Any, raw_input: dict[str, Any]) -> bool:
-        has_location_hint = any(
-            isinstance(raw_input.get(key), str) and raw_input.get(key, "").strip()
-            for key in ("file_path", "path", "pattern", "query")
-        )
-        if not has_location_hint:
-            return False
-
-        if name in _READ_LIKE_TOOL_NAMES:
-            return True
-
-        if tool is None:
-            return False
-
-        try:
-            validated_input = tool.input_schema.model_validate(raw_input)
-        except Exception:
-            validated_input = None
-
-        try:
-            return bool(tool.is_read_only(validated_input))
-        except TypeError:
-            return bool(tool.is_read_only())
-        except Exception:
-            return False
+        return is_read_like_tool(name, tool, raw_input)
 
     def _build_followup_recall_query(
         self,
@@ -1469,96 +1314,16 @@ class CoreExecutionEngine:
         tool_observations: list[dict[str, Any]],
     ) -> str:
         """Build a compact recall query from the task and latest tool outcomes."""
-        errors: list[str] = []
-        observations: list[str] = []
-
-        for observation in tool_observations:
-            call = observation["call"]
-            details = self._format_tool_input_for_recall(call.input)
-            label = call.name if not details else f"{call.name} ({details})"
-            content = self._clip_recall_text(observation.get("content", ""))
-            line = f"- {label}: {content}"
-            if observation.get("is_error"):
-                errors.append(line)
-            elif self._is_read_like_tool(call.name, observation.get("tool"), call.input):
-                observations.append(line)
-
-        parts = [f"Task: {task_query}"]
-        if errors:
-            parts.extend(["", "Recent tool errors:", *errors[:3]])
-        elif observations:
-            parts.extend(["", "Recent observations:", *observations[:3]])
-
-        return "\n".join(parts)
+        return build_followup_recall_query(task_query, tool_observations)
 
     @staticmethod
     def _format_tool_input_for_recall(raw_input: dict[str, Any]) -> str:
         """Extract compact location hints from a tool call input."""
-        if not isinstance(raw_input, dict):
-            return ""
-
-        hints: list[str] = []
-        for key in ("file_path", "path", "pattern", "query", "command"):
-            value = raw_input.get(key)
-            if isinstance(value, str) and value.strip():
-                hints.append(f"{key}={value.strip()}")
-            if len(hints) == 2:
-                break
-        return ", ".join(hints)
+        return format_tool_input_for_recall(raw_input)
 
     @staticmethod
     def _clip_recall_text(text: str, *, limit: int = 400) -> str:
-        cleaned = " ".join(text.split())
-        if len(cleaned) <= limit:
-            return cleaned
-        return cleaned[: max(limit - 3, 1)] + "..."
-
-
-def _inject_recalled_memories(state: AgentState, recalled: list[MemoryRecall]) -> None:
-    """Inject recalled memory content as a system-reminder user message.
-
-    Inserted before the current user turn so the model can use them while
-    answering that same turn, without displacing the user's message as the
-    most recent instruction.
-    """
-    message = build_recalled_memories_message(recalled)
-    if message is None:
-        return
-
-    _insert_before_current_user_message(state, message)
-
-
-def _inject_memory_index_context(state: AgentState, memory_dir: str) -> None:
-    """Inject the current MEMORY.md index as hidden user context."""
-    from pathlib import Path
-
-    message = build_memory_index_message(Path(memory_dir))
-    if message is not None:
-        _insert_before_current_user_message(state, message)
-
-
-def _strip_message_metadata(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Remove internal message-only metadata before sending requests to the API."""
-    api_messages: list[dict[str, Any]] = []
-    for msg in messages:
-        cleaned = {
-            key: value
-            for key, value in msg.items()
-            if key not in {"metadata", "isMeta"}
-        }
-        api_messages.append(cleaned)
-    return api_messages
-
-
-def _insert_before_current_user_message(
-    state: AgentState,
-    message: dict[str, Any],
-) -> None:
-    """Insert metadata before the current user query when possible."""
-    if state.messages and state.messages[-1].get("role") == "user":
-        state.messages.insert(len(state.messages) - 1, message)
-    else:
-        state.messages.append(message)
+        return clip_recall_text(text, limit=limit)
 
 
 def create_core_engine(

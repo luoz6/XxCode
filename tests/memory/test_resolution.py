@@ -34,10 +34,17 @@ class TestResolveMemoryDirectory:
         )
         assert result == Path("/env/path")
 
-    def test_non_git_dir_returns_none(self):
+    def test_non_git_dir_uses_path_slug(self, monkeypatch):
+        monkeypatch.setattr(resolution, "find_canonical_git_root", lambda cwd: None)
+        monkeypatch.setattr(
+            resolution,
+            "sanitize_path_for_path",
+            lambda path: "F--agent-XxCode",
+        )
+
         with tempfile.TemporaryDirectory() as tmp:
-            result = resolve_memory_directory(config_cwd=Path(tmp))
-            assert result is None
+            result = resolve_memory_directory(config_cwd=Path(tmp) / "agent" / "XxCode")
+            assert result == Path.home() / ".XxCode" / "projects" / "F--agent-XxCode" / "memory"
 
     def test_env_override_bypasses_git_check(self, monkeypatch):
         """Even in a non-git dir, env override should work."""
@@ -60,6 +67,9 @@ class TestResolveMemoryDirectory:
         result = resolve_memory_directory(config_cwd=git_root)
 
         assert result == Path.home() / ".XxCode" / "projects" / "abc123" / "memory"
+
+    def test_path_slug_format_keeps_drive_letter(self):
+        assert resolution.sanitize_path_for_path(Path("F:/agent/XxCode")) == "F--agent-XxCode"
 
 
 class TestEnsureMemoryDirectory:

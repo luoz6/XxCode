@@ -120,7 +120,7 @@ class QueryEngine:
     ) -> AsyncGenerator[StreamEvent, None]:
         if user_prompt.startswith("/"):
             cmd = user_prompt[1:].strip().lower()
-            if cmd in ("help", "cost", "tokens", "sessions", "compact", "compress"):
+            if cmd in ("help", "cost", "tokens", "skill", "mcp", "compact", "compress"):
                 yield StreamEvent(
                     type="text",
                     content=f"[system] The '{user_prompt}' command is handled by the REPL.\n",
@@ -202,6 +202,7 @@ class QueryEngine:
                     self.skill_executor.build_inline_skill_message(
                         skill,
                         execution.prompt or "",
+                        disable_skill_tool=True,
                     )
                 )
             self.core_engine.record_skill_invocation(

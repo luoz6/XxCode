@@ -7,6 +7,7 @@ the system prompt and used as the recall candidate list.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import tempfile
@@ -18,6 +19,8 @@ from .models import MemoryType
 from .store import MemoryStore
 
 INDEX_FILENAME = "MEMORY.md"
+
+logger = logging.getLogger(__name__)
 
 _LINE_BUDGET = 150
 MAX_ENTRYPOINT_LINES = 200
@@ -105,6 +108,14 @@ def truncate_entrypoint_content(raw: str) -> EntrypointTruncation:
 
     if was_line_truncated or was_byte_truncated:
         reason = " and ".join(reasons)
+        logger.warning(
+            "MEMORY.md truncated: %s (original=%d lines, %d bytes, limit=%d lines, %d bytes)",
+            reason,
+            line_count,
+            byte_count,
+            MAX_ENTRYPOINT_LINES,
+            MAX_ENTRYPOINT_BYTES,
+        )
         truncated += (
             f"\n\n> WARNING: MEMORY.md is {reason}. "
             "Only part of it was loaded."

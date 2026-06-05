@@ -39,7 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--model",
         type=str,
         default=None,
-        help="Model to use (default: claude-sonnet-4-6)",
+        help="Model to use (e.g. claude-sonnet-4-6, deepseek-v4-pro, gpt-4o)",
     )
 
     parser.add_argument(
@@ -179,7 +179,7 @@ def _bootstrap_memory(config: Config, bare_mode: bool) -> Path | None:
         auto_memory_directory=config.auto_memory_directory,
     )
     if mem_dir is None:
-        logger.info("Auto-memory disabled: not in a git repository.")
+        logger.info("Auto-memory disabled.")
         return None
 
     ensure_memory_directory(mem_dir)

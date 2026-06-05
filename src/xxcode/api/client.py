@@ -1,9 +1,9 @@
-"""LLM API client — Adapter pattern supporting Anthropic and DeepSeek backends.
+"""LLM API client — Adapter pattern supporting Anthropic, DeepSeek, and OpenAI backends.
 
 Architecture:
   LLMClient (ABC)
   ├── AnthropicClient  — Anthropic Messages API (native format)
-  └── DeepSeekClient   — DeepSeek API (OpenAI-compatible format)
+  └── DeepSeekClient   — OpenAI-compatible format (DeepSeek, GPT, etc.)
 
 Factory: create_llm_client() routes on api_model prefix.
 """
@@ -55,11 +55,24 @@ PRICING = {
     "claude-opus-4":       {"input": 15.00, "output": 75.00},
     "claude-sonnet-4":     {"input":  3.00, "output": 15.00},
     "claude-haiku-4":      {"input":  0.80, "output":  4.00},
-    # DeepSeek models (≈ ¥1-2/MTok ≈ $0.14-$0.28/MTok)
+    # DeepSeek models
     "deepseek-v4-pro":     {"input":  0.55, "output": 2.19},
     "deepseek-v4-flash":   {"input":  0.14, "output": 0.28},
     "deepseek-reasoner":   {"input":  0.55, "output": 2.19},
     "deepseek-chat":       {"input":  0.27, "output": 1.10},
+    # OpenAI GPT models
+    "gpt-5":               {"input":  1.25, "output": 10.00},
+    "gpt-5-mini":          {"input":  0.35, "output":  2.00},
+    "gpt-5-nano":          {"input":  0.10, "output":  0.50},
+    "gpt-4.1":             {"input":  2.00, "output":  8.00},
+    "gpt-4.1-mini":        {"input":  0.40, "output":  2.00},
+    "gpt-4.1-nano":        {"input":  0.10, "output":  0.80},
+    "gpt-4o":              {"input":  2.50, "output": 10.00},
+    "gpt-4o-mini":         {"input":  0.15, "output":  0.60},
+    "o4-mini":             {"input":  1.10, "output":  4.40},
+    "o3":                  {"input": 10.00, "output": 40.00},
+    "o3-mini":             {"input":  1.10, "output":  4.40},
+    "o1":                  {"input": 15.00, "output": 60.00},
 }
 
 # Default pricing for unknown models (conservative — assumes Claude Sonnet)
@@ -86,6 +99,17 @@ def get_pricing(model: str) -> dict[str, float]:
 
 def _is_deepseek_model(model: str) -> bool:
     return model.lower().strip().startswith("deepseek")
+
+
+def _is_openai_model(model: str) -> bool:
+    """Check if the model name indicates an OpenAI GPT / o-series model."""
+    model_lower = model.lower().strip()
+    return model_lower.startswith(("gpt-", "o1", "o3", "o4"))
+
+
+def _is_openai_compatible_model(model: str) -> bool:
+    """Models that use the OpenAI-compatible chat completions endpoint."""
+    return _is_deepseek_model(model) or _is_openai_model(model)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -540,81 +564,195 @@ class DeepSeekClient(LLMClient):
         return result
 
     @staticmethod
-    def _convert_anthropic_messages_to_openai(messages: list[dict]) -> list[dict]:
-        """Convert Anthropic-format content blocks to OpenAI string content.
+    def _is_system_hint_text(text: str) -> bool:
+        return "<system_hint>" in text
 
-        Anthropic messages have content as a list of typed blocks
-        (text, tool_use, tool_result).  OpenAI expects:
-          - text content as a plain string
-          - tool_use → assistant.tool_calls array
-          - tool_result (user-role in Anthropic) → role="tool" with tool_call_id
+    @staticmethod
+    def _tool_message_from_result(result: dict[str, Any]) -> dict[str, Any]:
+        content = result["content"]
+        if result["is_error"]:
+            content = f"[ERROR] {content}"
+        return {
+            "role": "tool",
+            "tool_call_id": result["tool_use_id"],
+            "content": content,
+        }
+
+    @staticmethod
+    def _fallback_tool_message(tool_call_id: str) -> dict[str, Any]:
+        return {
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "content": "Tool execution was interrupted or lost before the provider request was retried.",
+        }
+
+    @staticmethod
+    def _split_anthropic_blocks(
+        content: list[dict[str, Any]],
+    ) -> tuple[list[str], list[dict[str, Any]], list[dict[str, Any]]]:
+        text_parts: list[str] = []
+        tool_calls: list[dict[str, Any]] = []
+        tool_results: list[dict[str, Any]] = []
+        for block in content:
+            block_type = block.get("type", "")
+            if block_type == "text":
+                text_parts.append(block.get("text", ""))
+            elif block_type == "tool_use":
+                tool_calls.append({
+                    "id": block.get("id", ""),
+                    "type": "function",
+                    "function": {
+                        "name": block.get("name", ""),
+                        "arguments": json.dumps(block.get("input", {}), ensure_ascii=False),
+                    },
+                })
+            elif block_type == "tool_result":
+                tool_results.append({
+                    "tool_use_id": block.get("tool_use_id", ""),
+                    "content": DeepSeekClient._extract_tool_result_text(block),
+                    "is_error": block.get("is_error", False),
+                })
+        return text_parts, tool_calls, tool_results
+
+    @staticmethod
+    def _consume_tool_result_carrier(
+        message: dict[str, Any],
+        expected_ids: set[str],
+    ) -> tuple[list[dict[str, Any]], str, set[str]] | None:
+        """Consume one compatible tool-result carrier or reject it whole.
+
+        This helper is intentionally conservative: if a carrier message mixes
+        tool results with ordinary user-authored text, or mixes tool_result
+        ids from different assistant turns, return None so the caller can stop
+        the boundary instead of partially consuming the message.
         """
-        converted: list[dict] = []
-        for msg in messages:
+        if message.get("role") != "user":
+            return None
+
+        content = message.get("content", [])
+        if not isinstance(content, list):
+            return None
+
+        text_parts: list[str] = []
+        matched_ids: set[str] = set()
+        tool_messages: list[dict[str, Any]] = []
+        saw_tool_result = False
+
+        for block in content:
+            if not isinstance(block, dict):
+                return None
+
+            block_type = block.get("type", "")
+            if block_type == "tool_result":
+                tool_use_id = block.get("tool_use_id", "")
+                if tool_use_id not in expected_ids:
+                    return None
+                saw_tool_result = True
+                matched_ids.add(tool_use_id)
+                tool_messages.append(
+                    DeepSeekClient._tool_message_from_result({
+                        "tool_use_id": tool_use_id,
+                        "content": DeepSeekClient._extract_tool_result_text(block),
+                        "is_error": block.get("is_error", False),
+                    })
+                )
+                continue
+
+            if block_type == "text":
+                text = block.get("text", "")
+                if not isinstance(text, str):
+                    return None
+                if DeepSeekClient._is_system_hint_text(text):
+                    text_parts.append(text)
+                    continue
+                return None
+
+            return None
+
+        if not saw_tool_result:
+            return None
+
+        return tool_messages, "\n".join(part for part in text_parts if part), matched_ids
+
+    @staticmethod
+    def _convert_anthropic_messages_to_openai(messages: list[dict]) -> list[dict]:
+        """Convert Anthropic-format content blocks to OpenAI-compatible messages."""
+        converted: list[dict[str, Any]] = []
+        i = 0
+        while i < len(messages):
+            msg = messages[i]
             role = msg.get("role", "user")
             content = msg.get("content", "")
 
             if isinstance(content, str):
                 converted.append({"role": role, "content": content})
+                i += 1
                 continue
 
             if not isinstance(content, list):
                 converted.append({"role": role, "content": str(content)})
+                i += 1
                 continue
 
-            # Separate blocks by type
-            text_parts: list[str] = []
-            tool_calls: list[dict] = []
-            tool_results: list[dict] = []
-            for block in content:
-                block_type = block.get("type", "")
-                if block_type == "text":
-                    text_parts.append(block.get("text", ""))
-                elif block_type == "tool_use":
-                    tool_calls.append({
-                        "id": block.get("id", ""),
-                        "type": "function",
-                        "function": {
-                            "name": block.get("name", ""),
-                            "arguments": json.dumps(block.get("input", {}), ensure_ascii=False),
-                        },
-                    })
-                elif block_type == "tool_result":
-                    tool_results.append({
-                        "tool_use_id": block.get("tool_use_id", ""),
-                        "content": DeepSeekClient._extract_tool_result_text(block),
-                        "is_error": block.get("is_error", False),
-                    })
-                elif block_type in ("thinking", "redacted_thinking", "signature"):
-                    # Skip thinking blocks — DeepSeek doesn't support them
-                    pass
-
-            # Emit tool_result blocks first (user→tool role mapping)
-            if role == "user" and tool_results:
-                for tr in tool_results:
-                    msg: dict = {
-                        "role": "tool",
-                        "tool_call_id": tr["tool_use_id"],
-                        "content": tr["content"],
-                    }
-                    if tr["is_error"]:
-                        msg["content"] = f"[ERROR] {tr['content']}"
-                    converted.append(msg)
+            text_parts, tool_calls, tool_results = DeepSeekClient._split_anthropic_blocks(content)
 
             if role == "assistant" and tool_calls:
-                entry: dict = {"role": role}
+                assistant_entry: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": "\n".join(text_parts) if text_parts else "",
+                    "tool_calls": tool_calls,
+                }
+                converted.append(assistant_entry)
+
+                expected_ids = {
+                    call.get("id", "")
+                    for call in tool_calls
+                    if call.get("id", "")
+                }
+                i += 1
+
+                while i < len(messages):
+                    consumed = DeepSeekClient._consume_tool_result_carrier(
+                        messages[i],
+                        expected_ids,
+                    )
+                    if consumed is None:
+                        break
+
+                    tool_messages, trailing_text, matched_ids = consumed
+                    converted.extend(tool_messages)
+                    if trailing_text:
+                        converted.append({"role": "user", "content": trailing_text})
+                    expected_ids -= matched_ids
+                    i += 1
+
+                for missing_id in sorted(expected_ids):
+                    converted.append(DeepSeekClient._fallback_tool_message(missing_id))
+                continue
+
+            if role == "user" and tool_results:
                 if text_parts:
-                    entry["content"] = "\n".join(text_parts)
-                entry["tool_calls"] = tool_calls
-                converted.append(entry)
-            elif text_parts:
+                    converted.append({"role": "user", "content": "\n".join(text_parts)})
+                i += 1
+                continue
+
+            if text_parts:
                 converted.append({"role": role, "content": "\n".join(text_parts)})
-            elif role == "user" and not tool_results:
-                # Pure user message with no content blocks we can handle
+                i += 1
+                continue
+
+            if role == "assistant":
                 converted.append({"role": role, "content": ""})
-            elif role == "assistant" and not tool_calls:
-                # Assistant message with only thinking blocks → inject empty content
+                i += 1
+                continue
+
+            if role == "user":
                 converted.append({"role": role, "content": ""})
+                i += 1
+                continue
+
+            i += 1
+            continue
 
         return converted
 
@@ -832,10 +970,10 @@ def create_llm_client(
 ) -> LLMClient:
     """Factory: route to the correct LLM client based on model name.
 
-    If model starts with "deepseek" → DeepSeekClient (OpenAI format).
+    deepseek/gpt/o-series models → DeepSeekClient (OpenAI-compatible format).
     Everything else → AnthropicClient (Anthropic Messages API).
     """
-    if _is_deepseek_model(model):
+    if _is_openai_compatible_model(model):
         return DeepSeekClient(
             api_key=api_key,
             base_url=base_url,

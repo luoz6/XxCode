@@ -40,6 +40,68 @@ def add_usage(
         state.total_output_tokens += output_tokens
 
 
+def _repair_orphan_tools(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Defensively pair unpaired tool_use / tool_result blocks."""
+    tool_use_ids: set[str] = set()
+    tool_result_ids: set[str] = set()
+
+    for msg in messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if block.get("type") == "tool_use":
+                tid = block.get("id", "")
+                if tid:
+                    tool_use_ids.add(tid)
+            elif block.get("type") == "tool_result":
+                tid = block.get("tool_use_id", "")
+                if tid:
+                    tool_result_ids.add(tid)
+
+    orphan_uses = tool_use_ids - tool_result_ids
+    orphan_results = tool_result_ids - tool_use_ids
+    if not orphan_uses and not orphan_results:
+        return messages
+
+    repaired: list[dict[str, Any]] = []
+    for msg in messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            repaired.append(msg)
+            continue
+
+        new_content: list[dict[str, Any]] = []
+        has_orphan_use = False
+        for block in content:
+            if block.get("type") == "tool_result":
+                if block.get("tool_use_id", "") in orphan_results:
+                    continue
+            elif block.get("type") == "tool_use":
+                if block.get("id", "") in orphan_uses:
+                    has_orphan_use = True
+            new_content.append(block)
+
+        if new_content:
+            repaired.append({**msg, "content": new_content})
+
+        if has_orphan_use:
+            synthetic_results: list[dict[str, Any]] = []
+            for block in content:
+                if block.get("type") == "tool_use" and block.get("id", "") in orphan_uses:
+                    synthetic_results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": block["id"],
+                            "content": "[System: tool execution interrupted - no result available]",
+                        }
+                    )
+            if synthetic_results:
+                repaired.append({"role": "user", "content": synthetic_results})
+
+    return repaired
+
+
 def commit_assistant_turn(
     state: AgentState,
     *,
