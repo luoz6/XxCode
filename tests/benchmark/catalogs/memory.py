@@ -1,0 +1,140 @@
+from __future__ import annotations
+
+from xxcode.benchmark import (
+    BenchmarkCaseSpec,
+    BenchmarkPluginName,
+    BenchmarkTier,
+    VariantExpectation,
+)
+
+
+MEMORY_CASE_SPECS: list[BenchmarkCaseSpec] = [
+    BenchmarkCaseSpec(
+        case_id="memory_smoke_single_target_recall",
+        tier=BenchmarkTier.SMOKE,
+        plugin=BenchmarkPluginName.MEMORY,
+        scenario="Query clearly targets one memory file.",
+        variant_expectation=VariantExpectation.CANDIDATE_ONLY,
+        expected_metrics={
+            "top1_hit_rate": "1.0",
+            "full_match_rate": "1.0",
+        },
+        expected_failure_categories=("recall_miss", "wrong_top1"),
+        tags=("recall", "precision"),
+        execution_case_ids={"recall": ("single-obvious-target",)},
+    ),
+    BenchmarkCaseSpec(
+        case_id="memory_smoke_preference_usage",
+        tier=BenchmarkTier.SMOKE,
+        plugin=BenchmarkPluginName.MEMORY,
+        scenario="A recalled user preference changes the final answer.",
+        variant_expectation=VariantExpectation.BASELINE_VS_CANDIDATE,
+        expected_metrics={
+            "memory_lift_rate": ">0",
+            "memory_fact_usage_rate": ">0",
+        },
+        expected_failure_categories=("preference_ignored", "generic_answer"),
+        tags=("effectiveness", "preference"),
+        execution_case_ids={"effectiveness": ("preference-adherence",)},
+    ),
+    BenchmarkCaseSpec(
+        case_id="memory_smoke_conflict_override",
+        tier=BenchmarkTier.SMOKE,
+        plugin=BenchmarkPluginName.MEMORY,
+        scenario="A newer fact overrides an older one.",
+        variant_expectation=VariantExpectation.CANDIDATE_ONLY,
+        expected_metrics={"conflict_resolution_accuracy": "1.0"},
+        expected_failure_categories=("stale_fact_retained",),
+        tags=("state_update", "freshness"),
+        execution_case_ids={"extraction": ("conflict-risk",)},
+    ),
+    BenchmarkCaseSpec(
+        case_id="memory_core_repeated_fact_dedup",
+        tier=BenchmarkTier.CORE,
+        plugin=BenchmarkPluginName.MEMORY,
+        scenario="The same fact appears repeatedly across multiple turns.",
+        variant_expectation=VariantExpectation.CANDIDATE_ONLY,
+        expected_metrics={"extraction_deduplication_rate": "1.0"},
+        expected_failure_categories=("duplicate_memory_creation",),
+        tags=("extraction", "dedup"),
+        execution_case_ids={"extraction": ("duplicate-risk",)},
+    ),
+    BenchmarkCaseSpec(
+        case_id="memory_core_multi_turn_state_update",
+        tier=BenchmarkTier.CORE,
+        plugin=BenchmarkPluginName.MEMORY,
+        scenario="The user modifies constraints over multiple turns.",
+        variant_expectation=VariantExpectation.CANDIDATE_ONLY,
+        expected_metrics={
+            "conflict_resolution_accuracy": "1.0",
+            "freshness_suppression_rate": "1.0",
+        },
+        expected_failure_categories=("partial_override", "stale_merge"),
+        tags=("multi_turn", "overwrite"),
+        execution_case_ids={"extraction": ("conflict-risk", "missing-fact-risk")},
+    ),
+    BenchmarkCaseSpec(
+        case_id="memory_core_stale_memory_rejection",
+        tier=BenchmarkTier.CORE,
+        plugin=BenchmarkPluginName.MEMORY,
+        scenario="Outdated memory must be suppressed when fresher memory exists.",
+        variant_expectation=VariantExpectation.CANDIDATE_ONLY,
+        expected_metrics={"freshness_suppression_rate": "1.0"},
+        expected_failure_categories=("obsolete_fact_leak",),
+        tags=("stale_memory",),
+        execution_case_ids={"effectiveness": ("stale-memory-risk",)},
+    ),
+    BenchmarkCaseSpec(
+        case_id="memory_core_with_vs_without_memory",
+        tier=BenchmarkTier.CORE,
+        plugin=BenchmarkPluginName.MEMORY,
+        scenario="Candidate uses memory while the baseline runs with memory disabled.",
+        variant_expectation=VariantExpectation.BASELINE_VS_CANDIDATE,
+        expected_metrics={
+            "mean_memory_lift_delta": ">0",
+            "recall_mean_f1_at_k_delta": ">0",
+        },
+        expected_failure_categories=("no_lift", "regression"),
+        tags=("ab_test", "lift"),
+        execution_case_ids={
+            "recall": ("two-related-memories",),
+            "effectiveness": ("memory-lift", "project-lift"),
+        },
+    ),
+    BenchmarkCaseSpec(
+        case_id="memory_stress_many_similar_memories",
+        tier=BenchmarkTier.STRESS,
+        plugin=BenchmarkPluginName.MEMORY,
+        scenario="Large clusters of similar memories compete for recall.",
+        variant_expectation=VariantExpectation.CANDIDATE_ONLY,
+        expected_metrics={
+            "top1_hit_rate": "floor",
+            "stability_rate": "floor",
+        },
+        expected_failure_categories=("distractor_confusion",),
+        tags=("stress", "retrieval"),
+        execution_case_ids={
+            "recall": (
+                "distractor-resistance",
+                "description-beats-misleading-filename",
+                "generic-filename-relevant-description",
+                "cap-pressure",
+            )
+        },
+    ),
+    BenchmarkCaseSpec(
+        case_id="memory_stress_concurrent_writes",
+        tier=BenchmarkTier.STRESS,
+        plugin=BenchmarkPluginName.MEMORY,
+        scenario="Frequent consecutive writes stress memory indexing and storage.",
+        variant_expectation=VariantExpectation.CANDIDATE_ONLY,
+        expected_metrics={"concurrency_conflict_rate": "near 0"},
+        expected_failure_categories=("index_corruption", "write_race"),
+        tags=("stress", "concurrency"),
+        execution_case_ids={
+            "index": ("generated-type-order", "generated-description-signal"),
+            "extraction": ("captures-user-style", "rejects-temporary-debug-noise", "wrong-type-risk", "ungrounded-risk"),
+            "effectiveness": ("generic-answer-risk", "ungrounded-answer-risk", "project-rule-usage"),
+        },
+    ),
+]

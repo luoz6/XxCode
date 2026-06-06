@@ -8,25 +8,24 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+SRC_ROOT = REPO_ROOT / "src"
+for path in (str(SRC_ROOT), str(REPO_ROOT)):
+    if path not in sys.path:
+        sys.path.insert(0, path)
 
-from tests.memory.helpers.report_eval import (  # noqa: E402
-    UnifiedEvaluationReport,
-    build_unified_report,
-    format_unified_report,
-)
+from xxcode.benchmark import available_profiles, build_benchmark_report  # noqa: E402
+from xxcode.benchmark.reporting import format_benchmark_report  # noqa: E402
+from tests.benchmark.plugins.context import ContextBenchmarkPlugin  # noqa: E402
+from tests.benchmark.plugins.memory import MemoryBenchmarkPlugin  # noqa: E402
+from tests.benchmark.plugins.security import SecurityBenchmarkPlugin  # noqa: E402
 
 
 REPORT_PREFIX = "unified-eval-report-"
 REPORT_SUFFIX = ".txt"
+TIER_CHOICES = ("smoke", "core", "stress")
 
 
-def build_parser() -> ArgumentParser:
-    parser = ArgumentParser(
-        prog="run_unified_eval_report",
-        description="Run the deterministic unified evaluation report.",
-    )
+def add_report_arguments(parser: ArgumentParser) -> ArgumentParser:
     parser.add_argument(
         "--output-dir",
         default="docs/reports",
@@ -43,7 +42,33 @@ def build_parser() -> ArgumentParser:
         default=4,
         help="How many timestamped report files to retain.",
     )
+    parser.add_argument(
+        "--baseline-profile",
+        choices=available_profiles(),
+        default=None,
+        help="Optional fixed baseline profile for candidate-vs-baseline comparison.",
+    )
+    parser.add_argument(
+        "--tier",
+        dest="tiers",
+        action="append",
+        choices=TIER_CHOICES,
+        default=None,
+        help="Optional benchmark tier filter. May be provided multiple times.",
+    )
     return parser
+
+
+def build_parser(
+    *,
+    prog: str = "run_unified_eval_report",
+    description: str = "Run the deterministic unified evaluation report.",
+) -> ArgumentParser:
+    parser = ArgumentParser(
+        prog=prog,
+        description=description,
+    )
+    return add_report_arguments(parser)
 
 
 def parse_args(argv: list[str] | None = None) -> Namespace:
@@ -64,16 +89,33 @@ def prune_old_reports(output_dir: Path, keep: int) -> None:
         old_path.unlink()
 
 
-def _report_exit_code(report: UnifiedEvaluationReport) -> int:
-    return 0 if report.passed else 1
+def _report_exit_code(report) -> int:
+    return 0 if getattr(report, "passed", False) else 1
 
 
-async def run_report(output_dir: Path, work_dir: Path, keep: int) -> int:
+async def run_report(
+    output_dir: Path,
+    work_dir: Path,
+    keep: int,
+    *,
+    baseline_profile: str | None = None,
+    tiers: list[str] | None = None,
+) -> int:
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
         work_dir.mkdir(parents=True, exist_ok=True)
-        report = await build_unified_report(work_dir)
-        summary = format_unified_report(report)
+        plugins = [
+            MemoryBenchmarkPlugin(),
+            ContextBenchmarkPlugin(),
+            SecurityBenchmarkPlugin(),
+        ]
+        report = await build_benchmark_report(
+            plugins,
+            baseline_plugins=plugins if baseline_profile is not None else None,
+            baseline_profile=baseline_profile,
+            tiers=tiers,
+        )
+        summary = format_benchmark_report(report)
         print(summary)
         output_path = build_output_path(output_dir, datetime.now())
         output_path.write_text(summary, encoding="utf-8")
@@ -93,6 +135,8 @@ def main(argv: list[str] | None = None) -> int:
             output_dir=output_dir,
             work_dir=work_dir,
             keep=args.keep,
+            baseline_profile=args.baseline_profile,
+            tiers=args.tiers,
         )
     )
 
