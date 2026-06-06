@@ -141,6 +141,42 @@ xxcode --model deepseek-v4-pro -p "帮我分析当前仓库里的测试结构"
 - `--verbose`：开启调试日志
 - `--max-tokens`：限制单轮输出 tokens
 
+## 测试与评测
+
+使用下面这些命令来运行 benchmark 测试、生成报告，并将当前版本与 baseline profile 进行对比。
+
+仅运行 benchmark 测试：
+
+```powershell
+python -m pytest tests/benchmark -q
+```
+
+仅生成 benchmark 报告：
+
+```powershell
+python scripts/run_unified_eval_report.py
+```
+
+运行完整 benchmark 套件：
+
+```powershell
+python scripts/run_benchmark_suite.py
+```
+
+使用显式指定的报告目录和工作目录来运行完整套件：
+
+```powershell
+python scripts/run_benchmark_suite.py --output-dir .tmp/benchmark-reports --work-dir .tmp/unified-eval-run
+```
+
+与 baseline profile 进行对比：
+
+```powershell
+python scripts/run_benchmark_suite.py --baseline-profile memory_off
+python scripts/run_benchmark_suite.py --baseline-profile context_off
+python scripts/run_benchmark_suite.py --baseline-profile security_relaxed
+```
+
 ## 适合谁
 
 - 想研究 agent 内核、执行链路和 runtime 设计的人。
@@ -160,3 +196,4 @@ xxcode --model deepseek-v4-pro -p "帮我分析当前仓库里的测试结构"
 3. [`src/xxcode/agent/tools_executor.py`](src/xxcode/agent/tools_executor.py)
 4. [`src/xxcode/tools/agent/tool.py`](src/xxcode/tools/agent/tool.py)
 5. [`src/xxcode/tools/BashTool/permissions.py`](src/xxcode/tools/BashTool/permissions.py)
+
