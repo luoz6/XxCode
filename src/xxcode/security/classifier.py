@@ -16,6 +16,7 @@ import re
 from dataclasses import dataclass
 from enum import Enum, auto
 
+from ..tools.BashTool.security import run_all_security_checks, is_blocking
 from ..tools.BashTool._tokenizer import (
     extract_base_command as _canonical_extract_base_command,
     SAFE_ENV_VARS,
@@ -53,6 +54,15 @@ _COMMAND_STOP_TOKENS = {
     "&",
     "&&",
     "||",
+}
+_DANGEROUS_ENV_PREFIXES = {"IFS"}
+_SENSITIVE_READ_TARGETS = {
+    "/etc/shadow",
+    "/etc/sudoers",
+}
+_SECRET_READ_TARGETS = {
+    "/proc/self/environ",
+    "/proc/1/environ",
 }
 
 
@@ -130,6 +140,10 @@ def classify_command(command: str) -> ClassifierResult:
                 return ClassifierResult(CommandClass.NEEDS_PERMISSION, reason="pipeline contains non-safe command")
         return ClassifierResult(CommandClass.SAFE, reason="all pipeline segments are safe")
 
+    security_result = run_all_security_checks(cleaned)
+    if is_blocking(security_result):
+        return ClassifierResult(CommandClass.DANGEROUS, reason="blocked by shell security checks")
+
     # Extract base command (first non-redirect, non-env-var word).
     base, subcommand, has_sudo = _extract_base_command(cleaned)
 
@@ -141,8 +155,18 @@ def classify_command(command: str) -> ClassifierResult:
     if has_sudo:
         return ClassifierResult(CommandClass.DANGEROUS, reason="sudo/doas elevates privileges")
 
+    if base in _DANGEROUS_ENV_PREFIXES:
+        return ClassifierResult(CommandClass.DANGEROUS, reason=f"{base} assignment changes shell parsing")
+
     if "=" in base:
         return ClassifierResult(CommandClass.NEEDS_PERMISSION, reason="command has unsafe env prefix")
+
+    if _has_output_redirection(cleaned):
+        return ClassifierResult(CommandClass.NEEDS_PERMISSION, reason="command writes output")
+
+    sensitive_read = _classify_sensitive_read(base, cleaned)
+    if sensitive_read is not None:
+        return sensitive_read
 
     # Check if the base command itself is safe.
     if base in _SAFE_COMMANDS:
@@ -228,3 +252,32 @@ def _extract_base_command(command: str) -> tuple[str | None, str | None, bool]:
 def _tokenize_command(command: str) -> list[str]:
     """Tokenize a command using the canonical shell tokenizer."""
     return _canonical_tokenize(command)
+
+
+def _classify_sensitive_read(base: str, command: str) -> ClassifierResult | None:
+    if base not in {"cat", "head", "tail", "less", "more", "grep", "rg", "awk", "sed"}:
+        return None
+    tokens = _tokenize_command(command)
+    targets = {
+        token
+        for token in tokens[1:]
+        if token and not token.startswith("-")
+    }
+    if targets & _SECRET_READ_TARGETS:
+        return ClassifierResult(
+            CommandClass.DANGEROUS,
+            safe_command=base,
+            reason="reads process environment secrets",
+        )
+    if targets & _SENSITIVE_READ_TARGETS:
+        return ClassifierResult(
+            CommandClass.NEEDS_PERMISSION,
+            safe_command=base,
+            reason="reads sensitive system file",
+        )
+    return None
+
+
+def _has_output_redirection(command: str) -> bool:
+    tokens = _tokenize_command(command)
+    return any(token in {">", ">>", "1>", "2>", "&>"} for token in tokens)

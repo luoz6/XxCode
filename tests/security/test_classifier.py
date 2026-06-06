@@ -207,7 +207,31 @@ class TestClassifyCommand:
         result = classify_command("chmod 777 script.sh")
         assert result.command_class == CommandClass.DANGEROUS
 
+    def test_command_substitution_is_dangerous_before_safe_allowlist(self):
+        result = classify_command("echo $(whoami)")
+        assert result.command_class == CommandClass.DANGEROUS
+
+    def test_newline_injection_is_dangerous_before_safe_allowlist(self):
+        result = classify_command("echo hello\nwhoami")
+        assert result.command_class == CommandClass.DANGEROUS
+
+    def test_ifs_assignment_is_dangerous(self):
+        result = classify_command("IFS=, read a b")
+        assert result.command_class == CommandClass.DANGEROUS
+
+    def test_proc_environ_read_is_dangerous(self):
+        result = classify_command("cat /proc/self/environ")
+        assert result.command_class == CommandClass.DANGEROUS
+
     # ── NEEDS_PERMISSION commands ──
+
+    def test_sensitive_system_file_read_needs_permission(self):
+        result = classify_command("cat /etc/shadow")
+        assert result.command_class == CommandClass.NEEDS_PERMISSION
+
+    def test_output_redirection_needs_permission_before_safe_allowlist(self):
+        result = classify_command('echo "x" > /tmp/xxcode-benchmark.txt')
+        assert result.command_class == CommandClass.NEEDS_PERMISSION
 
     def test_git_commit_needs_permission(self):
         result = classify_command("git commit -m 'msg'")
