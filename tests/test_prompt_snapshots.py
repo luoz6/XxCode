@@ -150,7 +150,7 @@ def test_render_main_prompt_snapshot_freezes_dynamic_inputs(tmp_path):
     assert "2026-06-03" in rendered
     assert "Git branch: main" in rendered
     assert "project rules" in rendered
-    assert str(FAKE_CWD) in rendered
+    assert FAKE_CWD.as_posix() in rendered
     assert "Linux-5.0-test" in rendered
 
 
@@ -162,7 +162,7 @@ def test_render_subagent_prompt_snapshot_freezes_dynamic_inputs(tmp_path):
 
     assert "Git branch: main" in rendered
     assert "test-subagent" in rendered
-    assert str(FAKE_CWD) in rendered
+    assert FAKE_CWD.as_posix() in rendered
     assert "Linux-5.0-test" in rendered
 
 

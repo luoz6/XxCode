@@ -299,9 +299,10 @@ def build_budgeted_attachment_section(
 
 def build_environment_section(cwd: Path) -> PromptSection:
     env = get_environment_info()
+    display_cwd = Path(env.get("cwd") or str(cwd)).as_posix()
     content = (
         "## 环境信息\n\n"
-        f"- 工作目录：{cwd}\n"
+        f"- 工作目录：{display_cwd}\n"
         f"- 日期：{date.today().isoformat()}\n"
         f"- 平台：{env['platform']}\n"
         f"- Shell：{env['shell']}"

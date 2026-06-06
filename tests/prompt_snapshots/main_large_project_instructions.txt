@@ -75,7 +75,7 @@
 
 ## 环境信息
 
-- 工作目录：\fake\project
+- 工作目录：/fake/project
 - 日期：2026-06-03
 - 平台：Linux-5.0-test
 - Shell：/bin/bash
