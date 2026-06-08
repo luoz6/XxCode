@@ -187,13 +187,18 @@ python scripts/run_benchmark_suite.py --baseline-profile security_relaxed
 
 后续会继续补充更系统的文档讲解，重点会覆盖 memory、multi-agent、tool harness、权限链路和上下文工程这些部分。
 
+当前已经补充的文档：
+
+- [`docs/agent-loop-query-engine-and-loop-explained.md`](docs/agent-loop-query-engine-and-loop-explained.md)：从 `QueryEngine` 入口到 `CoreExecutionEngine` 内层 tool loop，按主执行路径拆解 XxCode 的核心 agent loop。
+
 ## 进一步阅读
 
 如果你想继续往下看，建议从这些入口开始：
 
-1. [`src/xxcode/agent/loop.py`](src/xxcode/agent/loop.py)
-2. [`src/xxcode/agent/task_runtime.py`](src/xxcode/agent/task_runtime.py)
-3. [`src/xxcode/agent/tools_executor.py`](src/xxcode/agent/tools_executor.py)
-4. [`src/xxcode/tools/agent/tool.py`](src/xxcode/tools/agent/tool.py)
-5. [`src/xxcode/tools/BashTool/permissions.py`](src/xxcode/tools/BashTool/permissions.py)
+1. [`docs/agent-loop-query-engine-and-loop-explained.md`](docs/agent-loop-query-engine-and-loop-explained.md)
+2. [`src/xxcode/agent/loop.py`](src/xxcode/agent/loop.py)
+3. [`src/xxcode/agent/task_runtime.py`](src/xxcode/agent/task_runtime.py)
+4. [`src/xxcode/agent/tools_executor.py`](src/xxcode/agent/tools_executor.py)
+5. [`src/xxcode/tools/agent/tool.py`](src/xxcode/tools/agent/tool.py)
+6. [`src/xxcode/tools/BashTool/permissions.py`](src/xxcode/tools/BashTool/permissions.py)
 
