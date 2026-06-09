@@ -28,6 +28,14 @@ async def test_autocompact_failures_persist_on_agent_state(tmp_path, monkeypatch
         raise RuntimeError("summarizer down")
 
     monkeypatch.setattr(ContextPipeline, "_autocompact", _fail_autocompact)
+    monkeypatch.setattr(
+        "xxcode.context.pipeline.apply_collapse_if_needed",
+        lambda messages, current_tokens, collapse_threshold_tokens, existing_regions=None: (False, []),
+    )
+    monkeypatch.setattr(
+        "xxcode.context.pipeline.should_autocompact",
+        lambda **kwargs: True,
+    )
 
     for _ in range(2):
         pipeline = ContextPipeline(config)

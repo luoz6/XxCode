@@ -8,6 +8,7 @@ from typing import Any
 
 from xxcode.config import Config
 from xxcode.context.builder import build_memory_section, build_system_prompt
+from xxcode.context.collapse import project_collapsed_view
 from xxcode.context.pipeline import ContextPipeline
 from xxcode.context.tokens import token_count_with_estimation
 from xxcode.memory.injection import (
@@ -265,10 +266,18 @@ async def run_context_case(
         context_limit=_derived_context_limit(case),
         threshold=_derived_threshold(case),
     )
+    api_bound_messages = (
+        project_collapsed_view(prepared_messages, stats.collapsed_regions)
+        if getattr(stats, "collapsed_regions", None)
+        else prepared_messages
+    )
 
-    flattened = render_flattened_snapshot(system_prompt, prepared_messages)
+    flattened = render_flattened_snapshot(system_prompt, api_bound_messages)
+    api_bound_tokens = token_count_with_estimation(api_bound_messages)
     token_counts = {
-        "prepared_messages_tokens": token_count_with_estimation(prepared_messages),
+        "prepared_messages_tokens": api_bound_tokens,
+        "api_bound_messages_tokens": api_bound_tokens,
+        "source_messages_tokens": token_count_with_estimation(prepared_messages),
         "flattened_snapshot_tokens": max(1, len(flattened) // 4),
     }
     return ContextSnapshot(
@@ -276,7 +285,19 @@ async def run_context_case(
         system_prompt=system_prompt,
         prepared_messages=prepared_messages,
         flattened_text_snapshot=flattened,
-        structured_snapshot_view=None,
+        structured_snapshot_view={
+            "api_bound_messages": api_bound_messages,
+            "api_bound_message_count": len(api_bound_messages),
+            "source_message_count": len(prepared_messages),
+            "collapsed_regions": [
+                {
+                    "start_idx": region.start_idx,
+                    "end_idx": region.end_idx,
+                    "summary": region.summary,
+                }
+                for region in getattr(stats, "collapsed_regions", [])
+            ],
+        },
         token_counts=token_counts,
         recall_diagnostics=RecallDiagnostics(
             index_injected=index_injected,

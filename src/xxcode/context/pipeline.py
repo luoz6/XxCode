@@ -13,7 +13,11 @@ from dataclasses import dataclass, field
 
 from ..config import Config
 from .auto import should_autocompact
-from .collapse import collapse_messages
+from .collapse import (
+    apply_collapse_if_needed,
+    get_l3_collapse_threshold,
+    project_collapsed_view,
+)
 from .micro import count_cleared_tool_results, microcompact_messages
 from .snip import snip_messages
 from .tokens import rough_estimate, token_count_with_estimation
@@ -37,6 +41,7 @@ class CompressionStats:
     micro_cleared: int = 0
     collapse_count: int = 0       # L3: exchanges collapsed
     auto_triggered: bool = False  # L4: sub-agent summary triggered
+    collapsed_regions: list = field(default_factory=list)
 
 
 class ContextPipeline:
@@ -64,6 +69,8 @@ class ContextPipeline:
         context_limit: int = 200_000,
         threshold: float | None = None,
         state: Any = None,
+        existing_l3_regions: list | None = None,
+        allow_autocompact: bool = True,
     ) -> tuple[list[dict], CompressionStats]:
         """Run progressive compression on the message list.
 
@@ -129,13 +136,35 @@ class ContextPipeline:
 
         # ── L3: Collapse ──────────────────────────────────────────
         logger.debug("L3 collapse: %d tokens still over limit", stats.tokens_after)
-        post_l2_tokens = stats.tokens_after
-        before_msgs = len(current)
-        current = collapse_messages(current, keep_recent=5)
-        stats.collapse_count = max(0, before_msgs - len(current))
-        stats.level_reached = 3
-
-        post_l3_tokens = token_count_with_estimation(current)
+        l3_threshold = get_l3_collapse_threshold(
+            context_limit=context_limit,
+            soft_limit=soft_limit,
+        )
+        suppress_auto, regions = apply_collapse_if_needed(
+            current,
+            current_tokens=stats.tokens_after,
+            collapse_threshold_tokens=l3_threshold,
+            existing_regions=existing_l3_regions,
+        )
+        stats.collapsed_regions = regions
+        if suppress_auto:
+            projected_current = project_collapsed_view(current, regions)
+            stats.level_reached = 3
+            stats.collapse_count = max(0, len(current) - len(projected_current))
+            stats.collapse_tokens_freed = post_l2_tokens - token_count_with_estimation(projected_current)
+            stats.tokens_after = token_count_with_estimation(projected_current)
+            return current, stats
+        if not allow_autocompact:
+            projected_current = project_collapsed_view(current, regions)
+            projected_tokens = token_count_with_estimation(projected_current)
+            stats.auto_tokens_freed = 0
+            stats.collapse_count = max(0, len(current) - len(projected_current))
+            stats.collapse_tokens_freed = post_l2_tokens - projected_tokens
+            stats.tokens_after = projected_tokens
+            return current, stats
+        projected_current = project_collapsed_view(current, regions)
+        post_l3_tokens = token_count_with_estimation(projected_current)
+        stats.collapse_count = max(0, len(current) - len(projected_current))
         stats.collapse_tokens_freed = post_l2_tokens - post_l3_tokens
         stats.tokens_after = post_l3_tokens
         if stats.tokens_after <= soft_limit:
@@ -164,7 +193,7 @@ class ContextPipeline:
                 stats.tokens_after, l1_char_tokens_freed, failure_count,
             )
             stats.auto_tokens_freed = 0
-            stats.tokens_after = token_count_with_estimation(current)
+            stats.tokens_after = post_l3_tokens
             return current, stats
 
         logger.debug("L4 auto: nuclear option triggered")
@@ -174,7 +203,7 @@ class ContextPipeline:
         # WARNING: 必须扣除压缩前的水位，否则系统会因为历史记录变短
         #          而误以为预算又恢复了。
         if state is not None and getattr(state, "task_budget_remaining", None) is not None:
-            final_tokens_before_nuke = token_count_with_estimation(current)
+            final_tokens_before_nuke = post_l3_tokens
             state.task_budget_remaining -= final_tokens_before_nuke
             logger.debug(
                 "L4 budget carryover: deducted %d tokens, %d remaining",
@@ -185,7 +214,7 @@ class ContextPipeline:
         stats.level_reached = 4
 
         try:
-            summary = await self._autocompact(current, system_prompt)
+            summary = await self._autocompact(projected_current, system_prompt)
             current = _inject_summary(current, summary, keep_recent=2)
             # Success — reset the failure counter.
             self._consecutive_autocompact_failures = 0

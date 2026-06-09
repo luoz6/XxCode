@@ -24,9 +24,10 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..api.client import APIClient
+from ..api.client import APIClient, LLMRequestOptions
 from ..api.retry import RetryConfig
 from ..config import Config, get_config
+from ..context.auto import run_post_compact_cleanup
 from ..memory.injection import (
     MEMORY_INDEX_SOURCE,
     strip_memory_context_messages,
@@ -46,6 +47,7 @@ from ..skills import (
     strip_skill_context_messages,
 )
 from ..tools import ToolCall
+from ..context.micro import CacheEdit
 from ..tools.file_edit import EditFileTool
 from ..tools.file_read import ReadFileTool
 from ..tools.file_write import WriteFileTool
@@ -165,6 +167,46 @@ class StreamAction:
     consecutive_api_errors: int = 0
 
 
+@dataclass
+class RuntimeCacheEditState:
+    """Short-lived Anthropic cache edit state for the active engine."""
+
+    pending: list[CacheEdit] = field(default_factory=list)
+    pinned: list[CacheEdit] = field(default_factory=list)
+    consumed_in_flight: list[CacheEdit] = field(default_factory=list)
+    created_at_monotonic: float = 0.0
+
+
+def _visible_tool_result_ids(messages: list[dict[str, Any]]) -> set[str]:
+    ids: set[str] = set()
+    for message in messages:
+        content = message.get("content", [])
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                tool_use_id = block.get("tool_use_id", "")
+                if tool_use_id:
+                    ids.add(tool_use_id)
+    return ids
+
+
+def _recent_read_files_for_post_compact(
+    state: AgentState,
+    limit: int,
+) -> list[dict[str, str]]:
+    entries = []
+    for path, entry in state.read_file_state.items():
+        if getattr(entry, "is_partial_view", False):
+            continue
+        content = getattr(entry, "content", "")
+        if not content:
+            continue
+        entries.append((float(getattr(entry, "timestamp", 0.0)), str(path), content))
+    entries.sort(key=lambda item: item[0])
+    return [{"path": path, "content": content} for _ts, path, content in entries[-limit:]]
+
+
 class CoreExecutionEngine:
     """Inner execution engine - runs the tool-loop until the model stops calling tools."""
 
@@ -184,6 +226,8 @@ class CoreExecutionEngine:
         self._skill_permission_future: asyncio.Future | None = None
         self._mcp_trust_future: asyncio.Future | None = None
         self._l3_regions: list[Any] = []
+        self._cache_edit_state = RuntimeCacheEditState()
+        self._last_assistant_completed_at_monotonic: float | None = None
         self._context: dict[str, Any] = {}
         self._mcp_initialized = False
         self._skill_permission_events: list[StreamEvent] = []
@@ -556,9 +600,18 @@ class CoreExecutionEngine:
                     current_tokens=current_total_tokens,
                     system_prompt=state.system_prompt,
                     state=state,
+                    existing_l3_regions=self._l3_regions,
                 )
                 if _stats.level_reached >= 1:
                     self.mark_skill_history_compacted("main")
+                if _stats.auto_triggered:
+                    run_post_compact_cleanup(
+                        state,
+                        _recent_read_files_for_post_compact(state, limit=5),
+                    )
+                    self._clear_runtime_compression_state_after_history_replace(state)
+                else:
+                    self._l3_regions = list(_stats.collapsed_regions)
 
             self._inject_skill_runtime_attachments(state)
             await self._inject_pending_task_notifications(state)
@@ -608,12 +661,22 @@ class CoreExecutionEngine:
                     thinking_budget_tokens=thinking_budget,
                 )
                 all_messages = self._build_messages(state)
+                visible_tool_result_ids = _visible_tool_result_ids(all_messages)
+                request_options = self._consume_cache_edits_for_request(
+                    visible_tool_result_ids
+                )
+                stream_kwargs = (
+                    {"options": request_options}
+                    if request_options.anthropic_cache_edits
+                    else {}
+                )
                 tool_schemas = active_registry.get_api_schemas()
 
                 async for event in client.stream_chat(
                     system_prompt=state.system_prompt,
                     messages=all_messages,
                     tools=tool_schemas,
+                    **stream_kwargs,
                 ):
                     action = self._handle_stream_event(
                         event,
@@ -635,6 +698,7 @@ class CoreExecutionEngine:
                         break
 
             except Exception as exc:
+                self._restore_in_flight_cache_edits()
                 error_str = str(exc)
                 if _is_fatal_api_error(error_str):
                     self._remember_api_error(state, error_str)
@@ -659,6 +723,11 @@ class CoreExecutionEngine:
                     yield StreamEvent(type="error", content=f"API error (recovered): {error_str[:300]}")
                     continue
 
+            if turn.stream_had_error or turn.ptl_detected:
+                self._restore_in_flight_cache_edits()
+            else:
+                self._pin_consumed_cache_edits()
+
             if not turn.stream_had_error:
                 consecutive_api_errors = 0
 
@@ -675,6 +744,7 @@ class CoreExecutionEngine:
                 action, recovery_event = await ptl_recovery.recover(state, turn.ptl_error_msg)
                 self._l3_regions = ptl_recovery.regions
                 if action == "retry":
+                    self._clear_runtime_compression_state_after_history_replace(state)
                     output_recovery.reset_after_history_replace(self.config.api_max_tokens)
                     continue
                 if recovery_event is not None:
@@ -852,6 +922,56 @@ class CoreExecutionEngine:
         )
         api_ready = _strip_message_metadata(normalized)
         return self._apply_rolling_cache(api_ready, state)
+
+    def _consume_cache_edits_for_request(
+        self,
+        visible_tool_result_ids: set[str],
+    ) -> LLMRequestOptions:
+        if not self.config.api_model.lower().startswith("claude-"):
+            self._cache_edit_state = RuntimeCacheEditState()
+            return LLMRequestOptions()
+        if not self.config.anthropic_cache_edits_enabled:
+            return LLMRequestOptions()
+
+        pinned = [
+            edit
+            for edit in self._cache_edit_state.pinned
+            if edit.tool_use_id in visible_tool_result_ids
+        ]
+        pending = [
+            edit
+            for edit in self._cache_edit_state.pending
+            if edit.tool_use_id in visible_tool_result_ids
+        ]
+        self._cache_edit_state.pinned = pinned
+        self._cache_edit_state.pending = []
+        self._cache_edit_state.consumed_in_flight = pending
+        edits = pinned + pending
+        return LLMRequestOptions(anthropic_cache_edits=edits or None)
+
+    def _pin_consumed_cache_edits(self) -> None:
+        existing = {edit.tool_use_id for edit in self._cache_edit_state.pinned}
+        self._cache_edit_state.pinned.extend(
+            edit
+            for edit in self._cache_edit_state.consumed_in_flight
+            if edit.tool_use_id not in existing
+        )
+        self._cache_edit_state.consumed_in_flight = []
+
+    def _restore_in_flight_cache_edits(self) -> None:
+        self._cache_edit_state.pending = (
+            self._cache_edit_state.consumed_in_flight
+            + self._cache_edit_state.pending
+        )
+        self._cache_edit_state.consumed_in_flight = []
+
+    def _clear_runtime_compression_state_after_history_replace(
+        self,
+        state: AgentState,
+    ) -> None:
+        self._l3_regions = []
+        self._cache_edit_state = RuntimeCacheEditState()
+        state.cache_breakpoints.clear()
 
     def _apply_rolling_cache(
         self,

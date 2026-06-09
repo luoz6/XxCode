@@ -55,6 +55,13 @@ class Config:
 
     # Compression
     context_compress_threshold: float = 0.85  # trigger compression at 85% context window
+    prompt_cache_ttl_seconds: float = field(
+        default_factory=lambda: float(os.environ.get("XXCODE_PROMPT_CACHE_TTL_SECONDS", "300"))
+    )
+    anthropic_cache_edits_enabled: bool = field(
+        default_factory=lambda: os.environ.get("XXCODE_ANTHROPIC_CACHE_EDITS", "").lower()
+        in ("1", "true", "yes")
+    )
     max_parent_turns: int = 100
 
     # Session

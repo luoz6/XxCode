@@ -20,6 +20,8 @@ _COMPRESSIBLE_TOOLS: frozenset[str] = frozenset({
     "run_shell",
     "grep_search",
     "glob_match",
+    "edit_file",
+    "write_file",
 })
 
 # Placeholder written into content when is_cache_cold=True.
@@ -102,6 +104,7 @@ def microcompact_messages(
     # Always deep-copy — never mutate the caller's list.
     result: list[dict[str, Any]] = copy.deepcopy(messages)
     edits: list[CacheEdit] = []
+    keep_recent = max(1, keep_recent)
 
     # Build tool_use_id → tool_name map from assistant tool_use blocks.
     # tool_result blocks carry the ID but NOT the name (per API schema).

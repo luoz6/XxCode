@@ -19,6 +19,7 @@ from typing import Any
 
 import httpx
 
+from ..context.micro import CacheEdit
 from .retry import RetryConfig, retry_with_backoff
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,13 @@ class APIResponse:
     stop_reason: str = "end_turn"
     input_tokens: int = 0
     output_tokens: int = 0
+
+
+@dataclass
+class LLMRequestOptions:
+    """Provider-specific options for one streaming request."""
+
+    anthropic_cache_edits: list[CacheEdit] | None = None
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -190,6 +198,8 @@ class LLMClient(ABC):
         system_prompt: str,
         messages: list[dict],
         tools: list[dict],
+        *,
+        options: LLMRequestOptions | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Stream a chat completion, yielding normalized events."""
         ...
@@ -344,6 +354,8 @@ class AnthropicClient(LLMClient):
         system_prompt: str,
         messages: list[dict],
         tools: list[dict],
+        *,
+        options: LLMRequestOptions | None = None,
     ) -> AsyncGenerator[dict, None]:
         url = f"{self.base_url}/v1/messages"
         headers = {
@@ -387,6 +399,10 @@ class AnthropicClient(LLMClient):
                 "type": "enabled",
                 "budget_tokens": self.thinking_budget_tokens,
             }
+        if options and options.anthropic_cache_edits:
+            logger.debug(
+                "Anthropic cache edits requested but request schema is not enabled."
+            )
 
         def _build_request():
             return httpx.URL(url), headers, body
@@ -809,6 +825,8 @@ class DeepSeekClient(LLMClient):
         system_prompt: str,
         messages: list[dict],
         tools: list[dict],
+        *,
+        options: LLMRequestOptions | None = None,
     ) -> AsyncGenerator[dict, None]:
         url = self._chat_completions_url()
         headers = self._build_headers()
@@ -1069,10 +1087,13 @@ class APIClient:
         system_prompt: str,
         messages: list[dict],
         tools: list[dict],
+        *,
+        options: LLMRequestOptions | None = None,
     ) -> AsyncGenerator[dict, None]:
         async for event in self._delegate.stream_chat(
             system_prompt=system_prompt,
             messages=messages,
             tools=tools,
+            options=options,
         ):
             yield event

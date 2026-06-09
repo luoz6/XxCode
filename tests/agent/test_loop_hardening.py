@@ -6,13 +6,16 @@ from xxcode.agent.output_recovery import ESCALATED_MAX_TOKENS
 from xxcode.agent.ptl_recovery import PTLRecoveryManager
 from xxcode.agent.state import AgentState
 from xxcode.config import Config
+from xxcode.context.micro import CacheEdit
+from xxcode.context.pipeline import CompressionStats, ContextPipeline
+from xxcode.tools.file_edit.types import FileStateEntry
 
 
 class _TruncateThenFinishClient:
     def __init__(self):
         self.calls = 0
 
-    async def stream_chat(self, system_prompt, messages, tools):
+    async def stream_chat(self, system_prompt, messages, tools, **kwargs):
         self.calls += 1
         if self.calls == 1:
             yield {"type": "message_id", "id": "msg-1"}
@@ -181,6 +184,128 @@ async def test_ptl_collapse_drain_preserves_tool_pairings(tmp_path):
     assert event is None
     uses, results = _tool_pairing_ids(state.messages)
     assert uses == results
+
+
+async def test_ptl_drain_clears_stale_runtime_compression_state(tmp_path):
+    config = _make_config(tmp_path)
+    engine = CoreExecutionEngine(config)
+    state = _make_state(
+        messages=[
+            {"role": "user", "content": [{"type": "text", "text": "start " + "x" * 100_000}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "reply " + "y" * 100_000}]},
+            {"role": "user", "content": [{"type": "text", "text": "now"}]},
+        ],
+    )
+    state.cache_breakpoints = {1}
+    engine._l3_regions = [object()]
+    engine._cache_edit_state.pending.append(CacheEdit(tool_use_id="tool-1"))
+
+    manager = PTLRecoveryManager(config=config, regions=engine._l3_regions)
+    action, _event = await manager.recover(state, "prompt is too long")
+    if action == "retry":
+        engine._clear_runtime_compression_state_after_history_replace(state)
+
+    assert engine._l3_regions == []
+    assert engine._cache_edit_state.pending == []
+    assert state.cache_breakpoints == set()
+
+
+class _CaptureMessagesClient:
+    def __init__(self):
+        self.messages = None
+
+    async def stream_chat(self, system_prompt, messages, tools):
+        self.messages = messages
+        yield {"type": "message_id", "id": "msg-capture"}
+        yield {"type": "text_delta", "text": "done"}
+        yield {"type": "usage", "input_tokens": 1, "output_tokens": 1}
+        yield {"type": "stop_reason", "stop_reason": "end_turn"}
+
+
+async def test_l3_regions_are_projected_for_request_without_rewriting_state(tmp_path):
+    config = _make_config(
+        tmp_path,
+        auto_memory_enabled=False,
+        mcp_enabled=False,
+        skills_enabled=False,
+        context_compress_threshold=0.0,
+    )
+    engine = CoreExecutionEngine(config)
+    client = _CaptureMessagesClient()
+    engine._build_client = lambda max_tokens=None, **kwargs: client
+    original_messages = []
+    for idx in range(8):
+        original_messages.append(
+            {"role": "user", "content": [{"type": "text", "text": f"user-{idx} " + "x" * 4000}]}
+        )
+        original_messages.append(
+            {"role": "assistant", "content": [{"type": "text", "text": f"assistant-{idx} " + "y" * 4000}]}
+        )
+    state = _make_state(messages=[dict(message) for message in original_messages])
+
+    events = await _collect_events(engine, state)
+
+    assert [event.type for event in events][-1] == "done"
+    assert engine._l3_regions
+    assert state.messages[: len(original_messages)] == original_messages
+    projected_texts = [
+        block["text"]
+        for message in client.messages
+        for block in message.get("content", [])
+        if block.get("type") == "text"
+    ]
+    assert any(text.startswith("[Earlier conversation") for text in projected_texts)
+    assert len(client.messages) < len(original_messages)
+
+
+async def test_l4_success_restores_recent_read_files(tmp_path, monkeypatch):
+    config = _make_config(
+        tmp_path,
+        auto_memory_enabled=False,
+        mcp_enabled=False,
+        skills_enabled=False,
+        context_compress_threshold=0.0,
+    )
+    engine = CoreExecutionEngine(config)
+    engine._build_client = lambda max_tokens=None, **kwargs: _CaptureMessagesClient()
+    state = _make_state("trigger compression")
+    state.read_file_state = {
+        "/old.py": FileStateEntry(content="old content", timestamp=1.0),
+        "/new.py": FileStateEntry(content="new content", timestamp=2.0),
+    }
+
+    async def _fake_compress(
+        self,
+        messages,
+        current_tokens=None,
+        system_prompt="",
+        context_limit=200_000,
+        threshold=None,
+        state=None,
+        existing_l3_regions=None,
+        allow_autocompact=True,
+    ):
+        stats = CompressionStats(level_reached=4, auto_triggered=True)
+        return [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "[Conversation summary]\nsummary"}],
+            }
+        ], stats
+
+    monkeypatch.setattr(ContextPipeline, "compress", _fake_compress)
+
+    events = await _collect_events(engine, state)
+
+    assert [event.type for event in events][-1] == "done"
+    recovery_texts = [
+        block["text"]
+        for message in state.messages
+        for block in message.get("content", [])
+        if block.get("type") == "text"
+    ]
+    assert any("[System: Post-compact memory restoration]" in text for text in recovery_texts)
+    assert any("/new.py" in text and "new content" in text for text in recovery_texts)
 
 
 class _NeverEndingToolClient:

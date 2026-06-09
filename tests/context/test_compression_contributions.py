@@ -4,6 +4,7 @@ import xxcode.context.pipeline as pipeline_module
 
 from xxcode.agent.state import AgentState
 from xxcode.config import Config
+from xxcode.context.collapse import project_collapsed_view
 from xxcode.context.pipeline import ContextPipeline
 from xxcode.context.tokens import token_count_with_estimation
 
@@ -114,7 +115,11 @@ async def test_l2_reports_exact_cleared_block_count(tmp_path, monkeypatch):
     messages.extend(_compressible_round("run_shell", "tool-2", "B" * 1800))
     messages.extend(_compressible_round("grep_search", "tool-3", "C" * 1800))
 
-    monkeypatch.setattr(pipeline_module, "collapse_messages", lambda current, keep_recent=5: current)
+    monkeypatch.setattr(
+        pipeline_module,
+        "apply_collapse_if_needed",
+        lambda messages, current_tokens, collapse_threshold_tokens, existing_regions=None: (False, []),
+    )
     monkeypatch.setattr(pipeline_module, "should_autocompact", lambda **kwargs: False)
 
     compressed, stats = await pipeline.compress(
@@ -161,15 +166,12 @@ async def test_l3_reports_net_message_reduction_and_token_delta(tmp_path, monkey
         threshold=0.4,
     )
 
+    projected = project_collapsed_view(compressed, stats.collapsed_regions)
     assert stats.collapse_tokens_freed > 0
-    # 16 messages total, and with the current role-alternation partitioning
-    # each message forms its own exchange. keep_recent=5 preserves the newest
-    # 5 messages; the older 11 messages collapse to 1 summary.
-    # Net reduction = 16 - (1 + 5) = 10.
-    assert stats.collapse_count == 10
+    assert stats.collapse_count == len(compressed) - len(projected)
     collapsed_texts = [
         block["text"]
-        for msg in compressed
+        for msg in projected
         for block in msg.get("content", [])
         if block.get("type") == "text"
     ]
@@ -190,6 +192,11 @@ async def test_l4_success_reports_budget_and_token_delta(tmp_path, monkeypatch):
         return "condensed summary"
 
     monkeypatch.setattr(ContextPipeline, "_autocompact", _fake_autocompact)
+    monkeypatch.setattr(
+        pipeline_module,
+        "apply_collapse_if_needed",
+        lambda messages, current_tokens, collapse_threshold_tokens, existing_regions=None: (False, []),
+    )
 
     state = AgentState(system_prompt="system")
     state.task_budget_remaining = 50_000
@@ -254,6 +261,11 @@ async def test_l4_failure_still_marks_attempt_but_no_token_gain(tmp_path, monkey
         raise RuntimeError("summarizer down")
 
     monkeypatch.setattr(ContextPipeline, "_autocompact", _fail_autocompact)
+    monkeypatch.setattr(
+        pipeline_module,
+        "apply_collapse_if_needed",
+        lambda messages, current_tokens, collapse_threshold_tokens, existing_regions=None: (False, []),
+    )
 
     state = AgentState(system_prompt="system")
     compressed, stats = await pipeline.compress(

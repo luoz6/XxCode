@@ -13,6 +13,8 @@ from tests.context.helpers.context_eval import (
     run_context_case,
     semantic_benchmark_cases,
 )
+from xxcode.context import pipeline as pipeline_module
+from xxcode.context.pipeline import ContextPipeline
 
 
 _DEFAULT_BUDGET = {
@@ -287,6 +289,131 @@ async def test_run_context_case_applies_compression_and_budget_checks(tmp_path):
     assert snapshot.compression_diagnostics.compression_used is True
     assert snapshot.compression_diagnostics.level_reached == 1
     assert snapshot.token_counts["prepared_messages_tokens"] < case.budget_expectation["soft_limit_tokens"]
+
+
+def _l3_projection_case() -> ContextEvalCase:
+    messages = []
+    for idx in range(8):
+        messages.append(
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": f"stale-turn-{idx} " + "x" * 4000}],
+            }
+        )
+        messages.append(
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": f"stale-reply-{idx} " + "y" * 4000}],
+            }
+        )
+    messages.append(
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": "Keep renderer.py as the current focus."}],
+        }
+    )
+    return _make_context_case(
+        case_id="l3-projection",
+        scenario="L3 collapse is evaluated through the API-bound projected view.",
+        cwd_files={"XXCODE.md": "Respect recent task context."},
+        messages=messages,
+        target_turn_index=len(messages) - 1,
+        expected_compression_level=3,
+        expected_present=["[Earlier conversation", "Keep renderer.py as the current focus."],
+        expected_absent=["stale-turn-0 " + "x" * 200],
+        expected_recent_present=["Keep renderer.py as the current focus."],
+        expected_stale_absent=["stale-turn-0 " + "x" * 200],
+        expected_compression_diagnostics=CompressionDiagnostics(
+            compression_used=True,
+            level_reached=3,
+            summary_injected=False,
+        ),
+        budget_expectation={
+            "soft_limit_tokens": 1000,
+            "hard_limit_tokens": 2000,
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_context_case_projects_l3_collapses_in_snapshot(tmp_path):
+    case = _l3_projection_case()
+
+    snapshot = await run_context_case(
+        case,
+        memory_dir=tmp_path / "memory",
+        cwd=tmp_path / "cwd",
+    )
+
+    assert "[Earlier conversation" in snapshot.flattened_text_snapshot
+    assert "Keep renderer.py as the current focus." in snapshot.flattened_text_snapshot
+    assert "stale-turn-0 " + "x" * 200 not in snapshot.flattened_text_snapshot
+    assert snapshot.compression_diagnostics == case.expected_compression_diagnostics
+    assert snapshot.structured_snapshot_view["api_bound_message_count"] < len(snapshot.prepared_messages)
+    assert snapshot.token_counts["api_bound_messages_tokens"] < snapshot.token_counts["source_messages_tokens"]
+
+
+def _l4_summary_case() -> ContextEvalCase:
+    messages = []
+    for idx in range(12):
+        messages.append(
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": f"archive-turn-{idx} " + "x" * 1000}],
+            }
+        )
+        messages.append(
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": f"archive-reply-{idx} " + "y" * 1000}],
+            }
+        )
+    return _make_context_case(
+        case_id="l4-summary",
+        scenario="L4 autocompact summary is visible in the evaluated snapshot.",
+        cwd_files={"XXCODE.md": "Respect summary context."},
+        messages=messages,
+        target_turn_index=len(messages) - 1,
+        expected_compression_level=4,
+        expected_present=["[Conversation summary]", "condensed evaluation summary"],
+        expected_absent=[],
+        expected_recent_present=[],
+        expected_stale_absent=[],
+        expected_compression_diagnostics=CompressionDiagnostics(
+            compression_used=True,
+            level_reached=4,
+            summary_injected=True,
+        ),
+        budget_expectation={
+            "soft_limit_tokens": 100,
+            "hard_limit_tokens": 200,
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_context_case_reports_l4_summary_snapshot(tmp_path, monkeypatch):
+    case = _l4_summary_case()
+
+    async def _fake_autocompact(self, current, system_prompt):
+        return "condensed evaluation summary"
+
+    monkeypatch.setattr(ContextPipeline, "_autocompact", _fake_autocompact)
+    monkeypatch.setattr(
+        pipeline_module,
+        "apply_collapse_if_needed",
+        lambda messages, current_tokens, collapse_threshold_tokens, existing_regions=None: (False, []),
+    )
+
+    snapshot = await run_context_case(
+        case,
+        memory_dir=tmp_path / "memory",
+        cwd=tmp_path / "cwd",
+    )
+
+    assert "[Conversation summary]" in snapshot.flattened_text_snapshot
+    assert "condensed evaluation summary" in snapshot.flattened_text_snapshot
+    assert snapshot.compression_diagnostics == case.expected_compression_diagnostics
 
 
 def test_compute_context_eval_metrics_counts_required_present_absent_and_budget():

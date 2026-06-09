@@ -19,11 +19,23 @@ from typing import Any
 # Number of recent exchanges to keep in full
 _DEFAULT_KEEP_RECENT = 5
 
+# Sidecar regions are indexed by message, not exchange. Keep roughly the same
+# recent tail as the legacy exchange-based collapse path.
+_DEFAULT_KEEP_RECENT_MESSAGES = _DEFAULT_KEEP_RECENT * 2
+
 # Default token threshold that triggers L3 collapse.
 _DEFAULT_COLLAPSE_THRESHOLD_TOKENS = 90_000
 
 # Minimum number of consecutive uncollapsed messages to form a new region.
 _MIN_REGION_SIZE = 3
+
+
+def get_l3_collapse_threshold(context_limit: int, soft_limit: int) -> int:
+    """Return an L3 threshold that cannot sit above the L4 trigger."""
+    from .auto import AUTOCOMPACT_BUFFER_TOKENS, MAX_OUTPUT_TOKENS_FOR_SUMMARY
+
+    l4_threshold = context_limit - MAX_OUTPUT_TOKENS_FOR_SUMMARY - AUTOCOMPACT_BUFFER_TOKENS
+    return max(1, min(_DEFAULT_COLLAPSE_THRESHOLD_TOKENS, soft_limit, l4_threshold - 1))
 
 
 # ── Sidecar data structures ──────────────────────────────────────────
@@ -222,6 +234,7 @@ def _find_uncollapsed_span(
     messages: list[dict[str, Any]],
     existing_regions: list[CollapsedRegion],
     min_size: int = _MIN_REGION_SIZE,
+    keep_recent: int = _DEFAULT_KEEP_RECENT_MESSAGES,
 ) -> tuple[int, int] | None:
     """Find the oldest contiguous span of uncollapsed messages.
 
@@ -233,9 +246,11 @@ def _find_uncollapsed_span(
         for i in range(region.start_idx, region.end_idx):
             collapsed.add(i)
 
-    # Walk from the beginning to find the first uncollapsed run.
+    # Walk from the beginning to find the first uncollapsed run. Keep the
+    # recent tail verbatim so active user intent does not disappear into L3.
+    search_limit = max(0, len(messages) - keep_recent)
     run_start = -1
-    for i in range(len(messages)):
+    for i in range(search_limit):
         if i not in collapsed:
             if run_start == -1:
                 run_start = i
@@ -245,8 +260,8 @@ def _find_uncollapsed_span(
             run_start = -1
 
     # Check trailing run
-    if run_start != -1 and (len(messages) - run_start) >= min_size:
-        return (run_start, len(messages))
+    if run_start != -1 and (search_limit - run_start) >= min_size:
+        return (run_start, search_limit)
 
     return None
 
@@ -342,7 +357,11 @@ def apply_collapse_if_needed(
         return (False, regions)
 
     # Find the oldest uncollapsed span.
-    span = _find_uncollapsed_span(messages, regions)
+    span = _find_uncollapsed_span(
+        messages,
+        regions,
+        keep_recent=_DEFAULT_KEEP_RECENT_MESSAGES,
+    )
     if span is None:
         # Everything already collapsed — fall through to L4.
         return (False, regions)
@@ -356,6 +375,15 @@ def apply_collapse_if_needed(
         f"for context efficiency. Original messages {start}–{end - 1} "
         f"contained verbose tool output that has been folded.]"
     )
+
+    span_messages = messages[start:end]
+    projections: list[ProjectedExchange] = []
+    for exchange in _partition_exchanges(span_messages):
+        projection = _project_exchange(exchange)
+        if projection is not None:
+            projections.append(projection)
+    if projections:
+        summary = _build_projection_text(projections)
 
     regions.append(CollapsedRegion(start_idx=start, end_idx=end, summary=summary))
     return (True, regions)
