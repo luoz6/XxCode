@@ -6,6 +6,7 @@ from xxcode.agent.output_recovery import ESCALATED_MAX_TOKENS
 from xxcode.agent.ptl_recovery import PTLRecoveryManager
 from xxcode.agent.state import AgentState
 from xxcode.config import Config
+from xxcode.context.collapse import CollapsedRegion
 from xxcode.context.micro import CacheEdit
 from xxcode.context.pipeline import CompressionStats, ContextPipeline
 from xxcode.tools.file_edit.types import FileStateEntry
@@ -214,7 +215,7 @@ class _CaptureMessagesClient:
     def __init__(self):
         self.messages = None
 
-    async def stream_chat(self, system_prompt, messages, tools):
+    async def stream_chat(self, system_prompt, messages, tools, **kwargs):
         self.messages = messages
         yield {"type": "message_id", "id": "msg-capture"}
         yield {"type": "text_delta", "text": "done"}
@@ -256,6 +257,47 @@ async def test_l3_regions_are_projected_for_request_without_rewriting_state(tmp_
     ]
     assert any(text.startswith("[Earlier conversation") for text in projected_texts)
     assert len(client.messages) < len(original_messages)
+
+
+async def test_existing_l3_projection_prevents_unneeded_compression_pass(tmp_path, monkeypatch):
+    config = _make_config(
+        tmp_path,
+        auto_memory_enabled=False,
+        mcp_enabled=False,
+        skills_enabled=False,
+        context_compress_threshold=0.01,
+    )
+    engine = CoreExecutionEngine(config)
+    client = _CaptureMessagesClient()
+    engine._build_client = lambda max_tokens=None, **kwargs: client
+    state = _make_state(
+        messages=[
+            {"role": "user", "content": [{"type": "text", "text": "old " + "x" * 20_000}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "reply " + "y" * 20_000}]},
+        ]
+    )
+    engine._l3_regions = [
+        CollapsedRegion(
+            start_idx=0,
+            end_idx=2,
+            summary="[Earlier conversation -- summarized]",
+        )
+    ]
+
+    async def _unexpected_compress(*args, **kwargs):
+        raise AssertionError("compression should use projected tokens for the entry check")
+
+    monkeypatch.setattr(ContextPipeline, "compress", _unexpected_compress)
+
+    events = await _collect_events(engine, state)
+
+    assert [event.type for event in events][-1] == "done"
+    assert client.messages == [
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": "[Earlier conversation -- summarized]"}],
+        }
+    ]
 
 
 async def test_l4_success_restores_recent_read_files(tmp_path, monkeypatch):

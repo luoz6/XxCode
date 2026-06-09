@@ -140,11 +140,26 @@ class ContextPipeline:
             context_limit=context_limit,
             soft_limit=soft_limit,
         )
+        existing_regions = list(existing_l3_regions or [])
+        if existing_regions:
+            projected_existing = project_collapsed_view(current, existing_regions)
+            projected_existing_tokens = token_count_with_estimation(projected_existing)
+            if projected_existing_tokens <= soft_limit:
+                stats.level_reached = 3
+                stats.collapsed_regions = existing_regions
+                stats.collapse_count = max(0, len(current) - len(projected_existing))
+                stats.collapse_tokens_freed = post_l2_tokens - projected_existing_tokens
+                stats.tokens_after = projected_existing_tokens
+                return current, stats
         suppress_auto, regions = apply_collapse_if_needed(
             current,
-            current_tokens=stats.tokens_after,
+            current_tokens=(
+                token_count_with_estimation(project_collapsed_view(current, existing_regions))
+                if existing_regions
+                else stats.tokens_after
+            ),
             collapse_threshold_tokens=l3_threshold,
-            existing_regions=existing_l3_regions,
+            existing_regions=existing_regions,
         )
         stats.collapsed_regions = regions
         if suppress_auto:

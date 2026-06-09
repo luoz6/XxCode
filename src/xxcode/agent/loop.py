@@ -593,11 +593,20 @@ class CoreExecutionEngine:
             )
 
             pipeline = ContextPipeline(self.config)
-            current_total_tokens = token_count_with_estimation(state.messages)
-            if current_total_tokens > int(200_000 * self.config.context_compress_threshold):
+            if self._l3_regions:
+                from ..context.collapse import project_collapsed_view
+
+                compression_check_messages = project_collapsed_view(
+                    list(state.messages),
+                    self._l3_regions,
+                )
+            else:
+                compression_check_messages = state.messages
+            current_api_bound_tokens = token_count_with_estimation(compression_check_messages)
+            if current_api_bound_tokens > int(200_000 * self.config.context_compress_threshold):
                 state.messages, _stats = await pipeline.compress(
                     state.messages,
-                    current_tokens=current_total_tokens,
+                    current_tokens=token_count_with_estimation(state.messages),
                     system_prompt=state.system_prompt,
                     state=state,
                     existing_l3_regions=self._l3_regions,

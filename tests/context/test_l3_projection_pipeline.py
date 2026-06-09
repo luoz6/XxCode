@@ -112,7 +112,7 @@ async def test_existing_l3_regions_report_projection_savings_when_l4_disallowed(
     existing_regions = [
         CollapsedRegion(
             start_idx=0,
-            end_idx=14,
+            end_idx=22,
             summary="[Earlier conversation -- summarized]",
         )
     ]
@@ -130,5 +130,33 @@ async def test_existing_l3_regions_report_projection_savings_when_l4_disallowed(
     assert compressed == messages
     assert stats.collapsed_regions == existing_regions
     assert stats.collapse_count > 0
+    assert stats.collapse_tokens_freed > 0
+    assert stats.auto_triggered is False
+
+
+@pytest.mark.asyncio
+async def test_existing_l3_projection_below_soft_limit_stops_without_new_region(tmp_path):
+    pipeline = _make_pipeline(tmp_path)
+    messages = _large_messages()
+    existing_regions = [
+        CollapsedRegion(
+            start_idx=0,
+            end_idx=22,
+            summary="[Earlier conversation -- summarized]",
+        )
+    ]
+
+    compressed, stats = await pipeline.compress(
+        messages,
+        current_tokens=None,
+        context_limit=20_000,
+        threshold=0.5,
+        state=AgentState(system_prompt="system"),
+        existing_l3_regions=existing_regions,
+        allow_autocompact=True,
+    )
+
+    assert compressed == messages
+    assert stats.collapsed_regions == existing_regions
     assert stats.collapse_tokens_freed > 0
     assert stats.auto_triggered is False
