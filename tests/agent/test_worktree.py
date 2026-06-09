@@ -1,6 +1,7 @@
 """Tests for git worktree isolation manager."""
 
 import asyncio
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -19,6 +20,19 @@ def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
         timeout=10,
         cwd=cwd,
     )
+
+
+def _canonical_path(path: str | Path) -> str:
+    return os.path.normcase(str(Path(path).resolve()))
+
+
+def _listed_worktree_paths(repo: Path) -> set[str]:
+    list_proc = _git(["worktree", "list", "--porcelain"], cwd=repo)
+    return {
+        _canonical_path(line.removeprefix("worktree "))
+        for line in list_proc.stdout.splitlines()
+        if line.startswith("worktree ")
+    }
 
 
 @pytest.fixture
@@ -70,19 +84,16 @@ class TestWorktreeCreateAndRemove:
             assert (result.worktree_path / "README.md").exists()
             assert (result.worktree_path / "README.md").read_text() == "# Test"
 
-            # Verify it appears in git worktree list (normalize slashes)
-            list_proc = _git(["worktree", "list"], cwd=git_repo)
-            wt_path_normalized = result.worktree_path.as_posix()
-            list_normalized = list_proc.stdout.replace("\\", "/")
-            assert wt_path_normalized in list_normalized
+            # Verify it appears in git worktree list. Canonicalize paths so
+            # Windows short names (RUNNER~1) and long names compare equal.
+            wt_path_normalized = _canonical_path(result.worktree_path)
+            assert wt_path_normalized in _listed_worktree_paths(git_repo)
 
             await WorktreeManager.remove(result.worktree_path)
             assert not result.worktree_path.exists()
 
             # Verify it's gone from git worktree list
-            list_proc = _git(["worktree", "list"], cwd=git_repo)
-            list_normalized = list_proc.stdout.replace("\\", "/")
-            assert wt_path_normalized not in list_normalized
+            assert wt_path_normalized not in _listed_worktree_paths(git_repo)
 
         asyncio.run(_run())
 
