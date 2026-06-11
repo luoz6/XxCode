@@ -13,7 +13,7 @@ from xxcode.memory.resolution import ensure_memory_directory, resolve_memory_dir
 class TestResolveMemoryDirectory:
     def test_env_override(self, monkeypatch):
         override_path = "/custom/memory/path"
-        monkeypatch.setenv("CLAUDE_COWORK_MEMORY_PATH_OVERRIDE", override_path)
+        monkeypatch.setenv("XXCODE_COWORK_MEMORY_PATH_OVERRIDE", override_path)
 
         result = resolve_memory_directory(config_cwd=Path.cwd())
         assert result == Path(override_path)
@@ -26,7 +26,7 @@ class TestResolveMemoryDirectory:
         assert result == Path("/settings/memory/path").resolve()
 
     def test_env_beats_setting(self, monkeypatch):
-        monkeypatch.setenv("CLAUDE_COWORK_MEMORY_PATH_OVERRIDE", "/env/path")
+        monkeypatch.setenv("XXCODE_COWORK_MEMORY_PATH_OVERRIDE", "/env/path")
 
         result = resolve_memory_directory(
             config_cwd=Path.cwd(),
@@ -48,13 +48,13 @@ class TestResolveMemoryDirectory:
 
     def test_env_override_bypasses_git_check(self, monkeypatch):
         """Even in a non-git dir, env override should work."""
-        monkeypatch.setenv("CLAUDE_COWORK_MEMORY_PATH_OVERRIDE", "/forced/path")
+        monkeypatch.setenv("XXCODE_COWORK_MEMORY_PATH_OVERRIDE", "/forced/path")
         with tempfile.TemporaryDirectory() as tmp:
             result = resolve_memory_directory(config_cwd=Path(tmp))
             assert result == Path("/forced/path")
 
     def test_trim_env_value(self, monkeypatch):
-        monkeypatch.setenv("CLAUDE_COWORK_MEMORY_PATH_OVERRIDE", "  /padded/path  ")
+        monkeypatch.setenv("XXCODE_COWORK_MEMORY_PATH_OVERRIDE", "  /padded/path  ")
         result = resolve_memory_directory(config_cwd=Path.cwd())
         assert result == Path("/padded/path")
 

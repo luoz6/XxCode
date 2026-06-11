@@ -192,6 +192,7 @@ python scripts/run_benchmark_suite.py --baseline-profile security_relaxed
 - [`docs/agent-loop-query-engine-and-loop-explained.md`](docs/agent-loop-query-engine-and-loop-explained.md)：从 `QueryEngine` 入口到 `CoreExecutionEngine` 内层 tool loop，按主执行路径拆解 XxCode 的核心 agent loop。
 - [`docs/context-engineering-explained.md`](docs/context-engineering-explained.md)：解释每轮模型调用前上下文如何被注入、压缩、投影、标准化和缓存标记，重点覆盖 `ContextPipeline`、L1-L4 压缩和 `_build_messages()`。
 - [`docs/memory-explained.md`](docs/memory-explained.md)：解释 memory 如何作为隐式用户消息进入上下文、如何通过双通道召回保持广度与深度，以及它怎样在后台 extraction 中持续沉淀。
+- [`docs/multi-agent-explained.md`](docs/multi-agent-explained.md)：解释 multi-agent runtime 如何派生子 agent、编排 worker、约束权限和工具，并用 scope、通知与 worktree 管住协作边界。
 
 ## 进一步阅读
 
@@ -200,10 +201,11 @@ python scripts/run_benchmark_suite.py --baseline-profile security_relaxed
 1. [`docs/agent-loop-query-engine-and-loop-explained.md`](docs/agent-loop-query-engine-and-loop-explained.md)
 2. [`docs/context-engineering-explained.md`](docs/context-engineering-explained.md)
 3. [`docs/memory-explained.md`](docs/memory-explained.md)
-4. [`src/xxcode/agent/loop.py`](src/xxcode/agent/loop.py)
-5. [`src/xxcode/context/pipeline.py`](src/xxcode/context/pipeline.py)
-6. [`src/xxcode/agent/task_runtime.py`](src/xxcode/agent/task_runtime.py)
-7. [`src/xxcode/agent/tools_executor.py`](src/xxcode/agent/tools_executor.py)
-8. [`src/xxcode/tools/agent/tool.py`](src/xxcode/tools/agent/tool.py)
-9. [`src/xxcode/tools/BashTool/permissions.py`](src/xxcode/tools/BashTool/permissions.py)
+4. [`docs/multi-agent-explained.md`](docs/multi-agent-explained.md)
+5. [`src/xxcode/agent/loop.py`](src/xxcode/agent/loop.py)
+6. [`src/xxcode/context/pipeline.py`](src/xxcode/context/pipeline.py)
+7. [`src/xxcode/agent/task_runtime.py`](src/xxcode/agent/task_runtime.py)
+8. [`src/xxcode/agent/tools_executor.py`](src/xxcode/agent/tools_executor.py)
+9. [`src/xxcode/tools/agent/tool.py`](src/xxcode/tools/agent/tool.py)
+10. [`src/xxcode/tools/BashTool/permissions.py`](src/xxcode/tools/BashTool/permissions.py)
 

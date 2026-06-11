@@ -33,7 +33,7 @@ class AgentInput(BaseModel):
         description=(
             "Agent type to spawn. Available types include "
             "'general-purpose', 'Explore', 'Plan', 'Coordinator', and "
-            "'claude-code-guide'."
+            "'docs-lookup'."
         ),
     )
     model: str | None = Field(
@@ -73,7 +73,7 @@ class AgentTool(Tool):
         "Use TaskList and TaskGet for inspection and result retrieval only. "
         "After all target workers settle, synthesize their results into one final answer. "
         "Workers are automatically isolated via git worktrees.\n"
-        "- claude-code-guide: documentation lookup."
+        "- docs-lookup: documentation lookup."
     )
     input_schema = AgentInput
 

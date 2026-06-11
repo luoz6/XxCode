@@ -47,12 +47,12 @@ def resolve_memory_directory(
 ) -> Path | None:
     """Resolve the memory directory using three-level priority.
 
-    1. ``CLAUDE_COWORK_MEMORY_PATH_OVERRIDE`` env var - bypasses all other logic
+    1. ``XXCODE_COWORK_MEMORY_PATH_OVERRIDE`` env var - bypasses all other logic
     2. ``auto_memory_directory`` setting - from user/managed settings only
     3. Default: ``~/.XxCode/projects/{git-root-hash}/memory/`` in git repos,
        or ``~/.XxCode/projects/{path-slug}/memory/`` outside git repos.
     """
-    env_override = os.environ.get("CLAUDE_COWORK_MEMORY_PATH_OVERRIDE")
+    env_override = os.environ.get("XXCODE_COWORK_MEMORY_PATH_OVERRIDE")
     if env_override:
         return Path(env_override.strip())
 

@@ -111,12 +111,12 @@ AGENT_DEFINITIONS: dict[str, AgentDef] = {
         permission_mode="bypass",
         isolation="worktree",
     ),
-    "claude-code-guide": AgentDef(
-        name="claude-code-guide",
+    "docs-lookup": AgentDef(
+        name="docs-lookup",
         description=(
-            "Use this agent when the user asks questions about Claude Code "
-            "features, hooks, slash commands, MCP servers, settings, IDE "
-            "integrations, or the Claude Agent SDK."
+            "Use this agent when the user asks questions about documentation, "
+            "reference material, hooks, slash commands, MCP servers, "
+            "settings, IDE integrations, or SDK usage."
         ),
         tools_allowlist={"read_file", "grep_search", "glob_match"},
         tools_denylist=None,
